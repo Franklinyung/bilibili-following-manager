@@ -340,17 +340,26 @@
 
     _doRequest(url, method, body, extraHeaders) {
       return new Promise((resolve, reject) => {
+        const headers = {
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          // 不显式设 Cookie：让 GM_xmlhttpRequest + anonymous:false 自动带浏览器全部 cookie
+          // （含 SESSDATA 即便是 httpOnly）
+          ...extraHeaders,
+        };
+        // bili_jct 通过 URL query 形式注入（部分接口认）
+        // 对于需要 CSRF 的 POST，B 站也能从 form body 的 csrf 字段读取，所以这里只补 Referer
+        if (method === 'POST') {
+          headers['Referer'] = 'https://www.bilibili.com/';
+          headers['Origin'] = 'https://www.bilibili.com';
+        }
         GM_xmlhttpRequest({
           method,
           url,
           data: body ? Object.entries(body).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&') : undefined,
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'Cookie': `SESSDATA=${utils.getSessdata()}`,
-            ...extraHeaders,
-          },
+          headers,
           responseType: 'json',
-          anonymous: false,
+          anonymous: false,        // 关键：false 才会带 cookie（true 不带）
+          withCredentials: true,   // 部分浏览器需要
           onload(r) {
             try {
               const resp = typeof r.response === 'string' ? JSON.parse(r.response) : r.response;
