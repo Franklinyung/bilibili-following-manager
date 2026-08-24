@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.6.0
+// @version      0.7.0
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -418,12 +418,19 @@
       return Object.values(this.state.following).filter(u => set.has(u.mid));
     },
 
-    // 死粉候选
+    // 死粉候选（已修复 lastActive=0 误判 bug）
+    // 只统计真正检测过且超过阈值未更新的 UP 主
     getInactiveCandidates() {
       const days = this.state.settings.inactiveThresholdDays;
+      const now = Date.now();
       return Object.values(this.state.following)
-        .filter(u => utils.daysSince(u.lastActive) > days)
+        .filter(u => u && u.lastActive > 0 && (now - u.lastActive) / 86400000 > days)
         .sort((a, b) => (a.lastActive || 0) - (b.lastActive || 0));
+    },
+
+    // 未检测过的 UP 主（独立于死粉，方便 UI 分段显示）
+    getUndetected() {
+      return Object.values(this.state.following).filter(u => u && !u.lastActive);
     },
   };
 
@@ -1698,13 +1705,31 @@ ${sample}
       const oneWeek = 7 * 86400000;
       // 仅在从未同步过（或数据为空超过一周）时自动同步；
       // 静默失败，不弹 alert，避免干扰浏览
+      let needRefreshInactive = false;
       if (!s.lastSync || (Date.now() - s.lastSync > oneWeek && Object.keys(s.following).length === 0)) {
         await utils._sleep(500);
         try {
           await sync.fullSync();
+          needRefreshInactive = true;  // 首次同步后顺手刷一次活跃度
           this.render();
         } catch (e) {
           utils.warn('自动同步失败（可忽略，稍后手动同步）', e.message || e);
+        }
+      } else if (Object.keys(s.following).length > 0 && !s.lastInactiveRefresh) {
+        // 有数据但从未刷过活跃度 → 也自动刷一次（修 v0.6 之前的 (1845) bug）
+        needRefreshInactive = true;
+      }
+
+      if (needRefreshInactive) {
+        await utils._sleep(800);
+        try {
+          this.updateProgress?.('首次使用：检测活跃度（首次会等几分钟）');
+          await sync.refreshInactive();
+          storage.patch({ lastInactiveRefresh: Date.now() });
+          this.clearProgress?.();
+          this.render();
+        } catch (e) {
+          utils.warn('首次活跃度检测失败', e.message || e);
         }
       }
     },
@@ -1892,22 +1917,50 @@ ${sample}
     },
 
     renderInactive(body) {
-      const list = storage.getInactiveCandidates();
-      if (!list.length) {
-        body.innerHTML = `<div class="bfm-empty">暂无死粉候选<br><br>请先点击"刷新活跃度"</div>`;
+      const dead = storage.getInactiveCandidates();
+      const undetected = storage.getUndetected();
+      const threshold = storage.state.settings.inactiveThresholdDays;
+
+      if (!dead.length && !undetected.length) {
+        body.innerHTML = `<div class="bfm-empty">暂无死粉<br><br>所有关注的 UP 主都活跃</div>`;
         return;
       }
-      body.innerHTML = `
-        <div class="bfm-section-title">超过 ${storage.state.settings.inactiveThresholdDays} 天未更新的关注 (${list.length})</div>
-        ${list.map(u => `
-          <div class="bfm-up">
-            <img src="${utils.esc(u.face)}" loading="lazy">
-            <div class="bfm-up-name">${utils.esc(u.uname)}</div>
-            <span class="bfm-up-meta bfm-inactive">${utils.formatDays(utils.daysSince(u.lastActive))}</span>
-            <a class="bfm-btn bfm-btn-ghost" href="https://space.bilibili.com/${u.mid}" target="_blank">查看</a>
-          </div>
-        `).join('')}
+
+      const renderUp = u => `
+        <div class="bfm-up">
+          <img src="${utils.esc(u.face)}" loading="lazy">
+          <div class="bfm-up-name">${utils.esc(u.uname)}</div>
+          <span class="bfm-up-meta">${u.lastActive
+            ? `<span class="bfm-up-meta bfm-inactive">${utils.formatDays(utils.daysSince(u.lastActive))}</span>`
+            : '<span class="bfm-up-meta">未检测</span>'}</span>
+          <a class="bfm-btn bfm-btn-ghost" href="https://space.bilibili.com/${u.mid}" target="_blank">查看</a>
+        </div>
       `;
+
+      let html = '';
+      if (dead.length) {
+        html += `
+          <div class="bfm-section-title">超过 ${threshold} 天未更新 (${dead.length})</div>
+          ${dead.map(renderUp).join('')}
+        `;
+      }
+      if (undetected.length) {
+        html += `
+          <div class="bfm-section-title">尚未检测活跃度 (${undetected.length})</div>
+          <div class="bfm-modal-note" style="margin-bottom:8px">
+            这些 UP 主还没有最新视频时间数据。<br>
+            点击下方按钮或顶栏"活跃度"刷新（约 ${Math.ceil(undetected.length * 0.2)} 秒）。
+          </div>
+          <button class="bfm-btn bfm-btn-primary" id="bfm-refresh-undetected" style="width:100%">
+            一键刷新 ${undetected.length} 位 UP 主的活跃度
+          </button>
+          ${undetected.slice(0, 50).map(renderUp).join('')}
+          ${undetected.length > 50 ? `<div class="bfm-empty" style="padding:8px">还有 ${undetected.length - 50} 个未显示</div>` : ''}
+        `;
+      }
+      body.innerHTML = html;
+      const btn = body.querySelector('#bfm-refresh-undetected');
+      if (btn) btn.addEventListener('click', () => this.runInactiveRefresh());
     },
 
     renderSettings(body) {
@@ -2044,6 +2097,7 @@ ${sample}
       }
       try {
         await sync.refreshInactive();
+        this.render();
       } catch (e) {
         utils.error(e);
         alert('刷新失败：' + (e.message || e));

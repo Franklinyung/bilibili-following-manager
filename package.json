@@ -1,0 +1,19 @@
+{
+  "name": "bilibili-following-manager",
+  "version": "0.7.0",
+  "description": "B 站关注管理油猴脚本：批量分组、动态页分组筛选、死粉识别、AI 智能分类",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\"",
+    "lint": "node scripts/lint.js",
+    "build": "node scripts/build.js",
+    "smoke": "node scripts/smoke.js",
+    "verify": "npm run lint && npm run test && npm run build && npm run smoke",
+    "dev": "node scripts/dev.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {}
+}

@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    name: Lint + Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run tests
+        run: npm test
+
+      - name: Smoke check (.user.js metadata)
+        run: npm run smoke
+
+      - name: Verify build artifact
+        run: |
+          if [ ! -s bilibili-following-manager.user.js ]; then
+            echo "::error::bilibili-following-manager.user.js missing or empty"
+            exit 1
+          fi
+          wc -l bilibili-following-manager.user.js
+
+      - name: Upload user script artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-script
+          path: bilibili-following-manager.user.js
+          retention-days: 14
