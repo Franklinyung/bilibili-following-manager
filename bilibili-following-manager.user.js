@@ -873,10 +873,12 @@ ${sample}
     btnEl: null,
     panelEl: null,
     activeView: 'groups',
+    shadow: null,         // ShadowRoot：所有 UI 都在这里，规避 B 站检测
+    shadowHost: null,
 
     mount() {
-      // 注入样式
-      GM_addStyle(`
+      // 样式（同时给原页面和 shadow 内 UI 用）
+      const CSS = `
         .bfm-fab { position: fixed; right: 24px; bottom: 80px; z-index: 9999;
           width: 48px; height: 48px; border-radius: 50%; border: none; cursor: pointer;
           background: #00aeec; color: #fff; font-size: 22px; box-shadow: 0 4px 12px rgba(0,0,0,.18);
@@ -937,13 +939,13 @@ ${sample}
         .bfm-foot { padding: 10px 16px; border-top: 1px solid #eee; font-size: 12px; color: #888; display: flex; gap: 8px; align-items: center; }
         .bfm-dark .bfm-foot { border-top-color: #2a2b2f; }
 
-        .bfm-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 10001; display: flex; align-items: center; justify-content: center; }
+        .bfm-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 10001; display: flex; align-items: center; justify-content: center; pointer-events: auto; }
         .bfm-modal { background: #fff; border-radius: 8px; min-width: 360px; max-width: 90vw; padding: 18px 20px; }
         .bfm-dark .bfm-modal { background: #212225; color: #e8e8e8; }
         .bfm-modal h3 { margin: 0 0 12px; font-size: 15px; }
         .bfm-modal input { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; box-sizing: border-box; }
         .bfm-dark .bfm-modal input { background: #2a2b2f; border-color: #3a3b3f; color: #e8e8e8; }
-        .bfm-modal-actions { margin-top: 14px; display: flex; gap: 8px; justify-content: flex-end; }
+        .bfm-modal-actions { margin: 14px 0 0; display: flex; gap: 8px; justify-content: flex-end; }
 
         .bfm-progress { padding: 12px 16px; background: #fff8e1; border-bottom: 1px solid #f0e1a8; font-size: 13px; }
         .bfm-dark .bfm-progress { background: #2d2a1d; border-bottom-color: #4a4530; }
@@ -952,15 +954,40 @@ ${sample}
 
         .bfm-hidden-by-group { display: none !important; }
         .bfm-check { position: absolute; top: 8px; left: 8px; width: 18px; height: 18px; cursor: pointer; z-index: 2; }
+      `;
+      // 原页面需要 bfm-hidden-by-group / bfm-check 样式（注入到 document）
+      GM_addStyle(`
+        .bfm-hidden-by-group { display: none !important; }
+        .bfm-check { position: absolute; top: 8px; left: 8px; width: 18px; height: 18px; cursor: pointer; z-index: 2; }
       `);
 
-      // FAB
+      // 创建 Shadow DOM host（B 站检测代码看不到 shadow 内部）
+      this.shadowHost = document.createElement('div');
+      this.shadowHost.id = 'bfm-shadow-host';
+      this.shadowHost.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483646;pointer-events:none';
+      document.documentElement.appendChild(this.shadowHost);
+      this.shadow = this.shadowHost.attachShadow({ mode: 'open' });
+
+      // 样式注入到 shadow 内（FAB/面板/弹窗）
+      const styleEl = document.createElement('style');
+      styleEl.textContent = CSS;
+      this.shadow.appendChild(styleEl);
+
+      // 创建 Shadow DOM host（B 站检测代码看不到 shadow 内部）
+      this.shadowHost = document.createElement('div');
+      this.shadowHost.id = 'bfm-shadow-host';
+      this.shadowHost.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483646;pointer-events:none';
+      document.documentElement.appendChild(this.shadowHost);
+      this.shadow = this.shadowHost.attachShadow({ mode: 'open' });
+
+      // FAB 按钮（放在 shadow 内）
       this.btnEl = document.createElement('button');
       this.btnEl.className = 'bfm-fab';
       this.btnEl.textContent = '📺';
       this.btnEl.title = 'B 站关注管理';
+      this.btnEl.style.pointerEvents = 'auto';
       this.btnEl.addEventListener('click', () => this.toggle());
-      document.body.appendChild(this.btnEl);
+      this.shadow.appendChild(this.btnEl);
 
       // 跟随深色模式
       if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
@@ -992,6 +1019,10 @@ ${sample}
         this.clearProgress();
         this.render();
       });
+
+      // 把 shadow 引用传给注入模块，让它们也躲 B 站检测
+      injectFollowPage.shadow = this.shadow;
+      injectDynamicPage.shadow = this.shadow;
 
       // 自动首次同步（如有缓存则跳过）
       this.maybeFirstRun();
@@ -1040,7 +1071,11 @@ ${sample}
           <span data-foot-sync></span>
         </div>
       `;
-      document.body.appendChild(this.panelEl);
+      document.body.appendChild(this.shadowHost);
+      // 注：这里不再 append 到 body，上面已经挂到 documentElement
+      // 但 openPanel 仍要把 panelEl 加到 shadow
+      this.panelEl.style.pointerEvents = 'auto';
+      this.shadow.appendChild(this.panelEl);
 
       // 事件
       this.panelEl.addEventListener('click', e => {
@@ -1467,7 +1502,9 @@ ${sample}
           </div>
         </div>
       `;
-      document.body.appendChild(mask);
+      // 弹窗挂到 shadow 而不是 body（躲 B 站检测）
+      mask.style.pointerEvents = 'auto';
+      (ui.shadow || document.body).appendChild(mask);
 
       mask.querySelector('[data-act="close"]').addEventListener('click', () => mask.remove());
       mask.querySelector('[data-act="apply"]').addEventListener('click', async () => {
@@ -1570,7 +1607,8 @@ ${sample}
           </div>
         </div>
       `;
-      document.body.appendChild(mask);
+      mask.style.pointerEvents = 'auto';
+      (ui.shadow || document.body).appendChild(mask);
       mask.querySelector('[data-act="close"]').addEventListener('click', () => mask.remove());
     },
 
@@ -1777,6 +1815,7 @@ ${sample}
     mounted: false,
     activeGroup: null,
     _observer: null,
+    shadow: null,   // 从 ui 传入
 
     async mount() {
       if (this.mounted) return;
@@ -1867,13 +1906,13 @@ ${sample}
         card.classList.toggle('bfm-hidden-by-group', !isMember);
         if (!isMember) hidden++;
       });
-      // 顶部提示
-      let tip = document.getElementById('bfm-filter-tip');
+      // 顶部提示（放 shadow 里，躲 B 站检测）
+      let tip = this.shadow?.getElementById('bfm-filter-tip') || document.getElementById('bfm-filter-tip');
       if (!tip) {
         tip = document.createElement('div');
         tip.id = 'bfm-filter-tip';
-        tip.style.cssText = 'position:fixed;top:8px;right:8px;background:#00aeec;color:#fff;padding:4px 10px;border-radius:14px;font-size:12px;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,.15)';
-        document.body.appendChild(tip);
+        tip.style.cssText = 'position:fixed;top:8px;right:8px;background:#00aeec;color:#fff;padding:4px 10px;border-radius:14px;font-size:12px;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,.15);pointer-events:auto';
+        (this.shadow || document.body).appendChild(tip);
       }
       const g = storage.state.groups.find(g => g.tagid === this.activeGroup);
       tip.textContent = `📺 仅显示分组：${g?.name || ''}（已隐藏 ${hidden} 条）`;
