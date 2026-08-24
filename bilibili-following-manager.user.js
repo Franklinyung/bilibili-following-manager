@@ -23,6 +23,7 @@
 // @connect      api.moonshot.cn
 // @connect      open.bigmodel.cn
 // @connect      api.minimax.io
+// @connect      api.minimaxi.com
 // @connect      localhost
 // @connect      127.0.0.1
 // @run-at       document-idle
@@ -605,73 +606,90 @@
    * models 第一个为该厂商默认推荐模型
    */
   const LLM_PROVIDERS = {
-    'minimax': {
-      label: 'minimax（默认）',
+    'minimax-payg': {
+      label: 'minimax 按量计费（Pay-as-you-go）',
       baseUrl: 'https://api.minimaxi.com/v1',
+      protocol: 'openai',
       models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
-      note: 'OpenAI 兼容。M3 原生多模态 + 1M 上下文。Code Plan 用订阅 Key，Pay-as-you-go 用 API Key。Token Plan 国际账户用 api.minimax.io',
+      note: 'OpenAI 兼容。Key 以 sk-api- 开头。国际账户改 api.minimax.io',
+    },
+    'minimax-token-plan': {
+      label: 'minimax Token Plan（订阅）',
+      baseUrl: 'https://api.minimaxi.com/anthropic',
+      protocol: 'anthropic',
+      models: ['MiniMax-M3', 'MiniMax-M2.7'],
+      note: 'Anthropic 兼容。Key 以 sk-cp- 开头。国际账户改 api.minimax.io',
     },
     'deepseek': {
       label: 'DeepSeek',
       baseUrl: 'https://api.deepseek.com/v1',
+      protocol: 'openai',
       models: ['deepseek-chat', 'deepseek-reasoner'],
       note: '国内，便宜，V3/R1 都有',
     },
     'kimi': {
       label: 'Kimi（Moonshot 月之暗面）',
       baseUrl: 'https://api.moonshot.cn/v1',
+      protocol: 'openai',
       models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-k2-0711-preview'],
       note: '长文本友好，最高 128k context',
     },
     'qwen': {
       label: '通义千问（阿里 DashScope）',
       baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      protocol: 'openai',
       models: ['qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-long'],
       note: '阿里云，需先在控制台开通 DashScope',
     },
     'zhipu': {
       label: '智谱 BigModel',
       baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
+      protocol: 'openai',
       models: ['glm-4-flash', 'glm-4-air', 'glm-4', 'glm-4-plus'],
       note: '兼容模式，GLM-4-Flash 限时免费',
     },
     'siliconflow': {
       label: '硅基流动 SiliconFlow',
       baseUrl: 'https://api.siliconflow.cn/v1',
+      protocol: 'openai',
       models: ['Qwen/Qwen2.5-7B-Instruct', 'Qwen/Qwen2.5-72B-Instruct', 'deepseek-ai/DeepSeek-V2.5', 'meta-llama/Llama-3.1-8B-Instruct'],
       note: '聚合站，多模型可选',
     },
     'gemini': {
       label: 'Google Gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+      protocol: 'openai',
       models: ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro'],
       note: '需要海外网络',
     },
     'openai': {
       label: 'OpenAI 官方',
       baseUrl: 'https://api.openai.com/v1',
+      protocol: 'openai',
       models: ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'],
       note: '需科学上网，gpt-4o-mini 最便宜',
     },
     'ollama': {
       label: 'Ollama（本地）',
       baseUrl: 'http://localhost:11434/v1',
+      protocol: 'openai',
       models: ['llama3.1:8b', 'qwen2.5:7b', 'deepseek-r1:8b'],
       note: '本地推理免费，API Key 随便填一个字符串',
     },
     'custom': {
       label: '自定义（其他厂商）',
       baseUrl: '',
+      protocol: 'openai',
       models: [],
-      note: '填你自己的 Base URL 和 Model 名',
+      note: '填你自己的 Base URL 和 Model 名（OpenAI 兼容）',
     },
   };
 
   const llm = {
     // 配置
     defaults: {
-      provider: 'minimax',
-      baseUrl: 'https://api.minimaxi.com/v1',
+      provider: 'minimax-token-plan',
+      baseUrl: 'https://api.minimaxi.com/anthropic',
       apiKey: '',
       model: 'MiniMax-M3',
       temperature: 0.3,
@@ -685,7 +703,12 @@
 
     getConfig() {
       const stored = storage.state.settings.llm || {};
-      const merged = { ...this.defaults, ...stored };
+      let provider = stored.provider;
+      // 老用户迁移：旧 'minimax' 按 baseUrl 拆分到 payg / token-plan
+      if (provider === 'minimax') {
+        provider = stored.baseUrl?.includes('/anthropic') ? 'minimax-token-plan' : 'minimax-payg';
+      }
+      const merged = { ...this.defaults, ...stored, provider };
       // 老用户迁移：如果没有 provider 字段，根据 baseUrl 自动推断
       if (!stored.provider && stored.baseUrl) {
         for (const [k, v] of Object.entries(LLM_PROVIDERS)) {
@@ -727,11 +750,19 @@
       return LLM_PROVIDERS[provider]?.note || '';
     },
 
-    // 通用 chat 调用
+    // 通用 chat 调用 — 根据 provider.protocol 分发到 OpenAI / Anthropic 两种实现
     async chat(messages, opts = {}) {
       const cfg = this.getConfig();
       if (!this.isConfigured()) throw new Error('请先在设置页配置 LLM API Key');
+      const protocol = LLM_PROVIDERS[cfg.provider]?.protocol || 'openai';
+      return protocol === 'anthropic'
+        ? this._chatAnthropic(messages, opts)
+        : this._chatOpenAI(messages, opts);
+    },
 
+    // OpenAI 兼容协议（DeepSeek/Kimi/Qwen/OpenAI/Gemini/...）
+    _chatOpenAI(messages, opts = {}) {
+      const cfg = this.getConfig();
       return utils.enqueue(() => new Promise((resolve, reject) => {
         GM_xmlhttpRequest({
           method: 'POST',
@@ -748,6 +779,7 @@
             stream: false,
           }),
           responseType: 'json',
+          anonymous: true,
           onload(r) {
             try {
               const resp = typeof r.response === 'string' ? JSON.parse(r.response) : r.response;
@@ -756,10 +788,55 @@
               resolve(content);
             } catch (e) { reject(e); }
           },
-          // onerror 在网络层/CORS/被拒时触发，输出详细 status + body 帮助排查
-          onerror(e) {
-            reject(new Error(`网络错误 (status=${e?.status || '?'})`));
+          onerror(e) { reject(new Error(`网络错误 (status=${e?.status || '?'})`)); },
+          ontimeout() { reject(new Error('请求超时')); },
+        });
+      }));
+    },
+
+    // Anthropic 兼容协议（minimax Token Plan、Claude 等）
+    _chatAnthropic(messages, opts = {}) {
+      const cfg = this.getConfig();
+      // OpenAI 格式 -> Anthropic 格式
+      // system message 提到顶层，user/assistant 的 content 改为数组
+      const systemParts = [];
+      const chatMessages = [];
+      for (const m of messages) {
+        if (m.role === 'system') systemParts.push(m.content);
+        else if (m.role === 'user' || m.role === 'assistant') {
+          chatMessages.push({ role: m.role, content: [{ type: 'text', text: String(m.content ?? '') }] });
+        }
+      }
+      const body = {
+        model: cfg.model,
+        messages: chatMessages,
+        max_tokens: opts.maxTokens ?? cfg.maxTokens,
+        temperature: opts.temperature ?? cfg.temperature,
+      };
+      if (systemParts.length) body.system = systemParts.join('\n\n');
+
+      return utils.enqueue(() => new Promise((resolve, reject) => {
+        GM_xmlhttpRequest({
+          method: 'POST',
+          url: `${cfg.baseUrl.replace(/\/$/, '')}/v1/messages`,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${cfg.apiKey}`,
+            'anthropic-version': '2023-06-01',
           },
+          data: JSON.stringify(body),
+          responseType: 'json',
+          anonymous: true,
+          onload(r) {
+            try {
+              const resp = typeof r.response === 'string' ? JSON.parse(r.response) : r.response;
+              if (resp.error) return reject(new Error(resp.error.message || (resp.error.type || 'LLM error')));
+              // Anthropic 响应: { content: [{type:"text", text:"..."}], ... }
+              const block = (resp.content || []).find(b => b.type === 'text');
+              resolve(block?.text || '');
+            } catch (e) { reject(e); }
+          },
+          onerror(e) { reject(new Error(`网络错误 (status=${e?.status || '?'})`)); },
           ontimeout() { reject(new Error('请求超时')); },
         });
       }));
