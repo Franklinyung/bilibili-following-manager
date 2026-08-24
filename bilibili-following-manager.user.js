@@ -671,9 +671,9 @@
     // 配置
     defaults: {
       provider: 'minimax',
-      baseUrl: 'https://api.minimax.io/v1',
+      baseUrl: 'https://api.minimaxi.com/v1',
       apiKey: '',
-      model: 'MiniMax-M2.7',
+      model: 'MiniMax-M3',
       temperature: 0.3,
       maxTokens: 2000,
     },
