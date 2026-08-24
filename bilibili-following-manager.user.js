@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.3.0
+// @version      0.3.1
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -23,6 +23,7 @@
 // @connect      api.openai.com
 // @connect      api.moonshot.cn
 // @connect      open.bigmodel.cn
+// @connect      api.minimax.io
 // @connect      localhost
 // @connect      127.0.0.1
 // @run-at       document-idle
@@ -479,11 +480,17 @@
    * models 第一个为该厂商默认推荐模型
    */
   const LLM_PROVIDERS = {
+    'minimax': {
+      label: 'minimax（默认）',
+      baseUrl: 'https://api.minimax.io/v1',
+      models: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed', 'M2-her'],
+      note: 'OpenAI 兼容。Code Plan 用户填订阅 Key，Pay-as-you-go 填 API Key',
+    },
     'deepseek': {
-      label: 'DeepSeek（推荐，便宜）',
+      label: 'DeepSeek',
       baseUrl: 'https://api.deepseek.com/v1',
       models: ['deepseek-chat', 'deepseek-reasoner'],
-      note: '国内，便宜，V3/R1 都有，注册送额度',
+      note: '国内，便宜，V3/R1 都有',
     },
     'kimi': {
       label: 'Kimi（Moonshot 月之暗面）',
@@ -538,10 +545,10 @@
   const llm = {
     // 配置
     defaults: {
-      provider: 'deepseek',
-      baseUrl: 'https://api.deepseek.com/v1',
+      provider: 'minimax',
+      baseUrl: 'https://api.minimax.io/v1',
       apiKey: '',
-      model: 'deepseek-chat',
+      model: 'MiniMax-M2.7',
       temperature: 0.3,
       maxTokens: 2000,
     },
@@ -553,7 +560,18 @@
 
     getConfig() {
       const stored = storage.state.settings.llm || {};
-      return { ...this.defaults, ...stored };
+      const merged = { ...this.defaults, ...stored };
+      // 老用户迁移：如果没有 provider 字段，根据 baseUrl 自动推断
+      if (!stored.provider && stored.baseUrl) {
+        for (const [k, v] of Object.entries(LLM_PROVIDERS)) {
+          if (k === 'custom') continue;
+          if (v.baseUrl && stored.baseUrl.replace(/\/$/, '') === v.baseUrl.replace(/\/$/, '')) {
+            merged.provider = k;
+            break;
+          }
+        }
+      }
+      return merged;
     },
 
     setConfig(partial) {
