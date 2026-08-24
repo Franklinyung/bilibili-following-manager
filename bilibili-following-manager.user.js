@@ -358,8 +358,7 @@
           data: body ? Object.entries(body).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&') : undefined,
           headers,
           responseType: 'json',
-          anonymous: false,        // 关键：false 才会带 cookie（true 不带）
-          withCredentials: true,   // 部分浏览器需要
+          anonymous: false,        // 关键：false 才会带浏览器 cookie（true 不带）
           onload(r) {
             try {
               const resp = typeof r.response === 'string' ? JSON.parse(r.response) : r.response;
