@@ -607,9 +607,9 @@
   const LLM_PROVIDERS = {
     'minimax': {
       label: 'minimax（默认）',
-      baseUrl: 'https://api.minimax.io/v1',
+      baseUrl: 'https://api.minimaxi.com/v1',
       models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
-      note: 'OpenAI 兼容。M3 原生多模态 + 1M 上下文，Code Plan 推荐',
+      note: 'OpenAI 兼容。M3 原生多模态 + 1M 上下文。Code Plan 用订阅 Key，Pay-as-you-go 用 API Key。Token Plan 国际账户用 api.minimax.io',
     },
     'deepseek': {
       label: 'DeepSeek',
@@ -756,7 +756,10 @@
               resolve(content);
             } catch (e) { reject(e); }
           },
-          onerror() { reject(new Error('网络错误')); },
+          // onerror 在网络层/CORS/被拒时触发，输出详细 status + body 帮助排查
+          onerror(e) {
+            reject(new Error(`网络错误 (status=${e?.status || '?'})`));
+          },
           ontimeout() { reject(new Error('请求超时')); },
         });
       }));
