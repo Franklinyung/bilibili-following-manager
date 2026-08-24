@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.3.1
+// @version      0.3.2
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -483,8 +483,8 @@
     'minimax': {
       label: 'minimax（默认）',
       baseUrl: 'https://api.minimax.io/v1',
-      models: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed', 'M2-her'],
-      note: 'OpenAI 兼容。Code Plan 用户填订阅 Key，Pay-as-you-go 填 API Key',
+      models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
+      note: 'OpenAI 兼容。M3 原生多模态 + 1M 上下文，Code Plan 推荐',
     },
     'deepseek': {
       label: 'DeepSeek',
