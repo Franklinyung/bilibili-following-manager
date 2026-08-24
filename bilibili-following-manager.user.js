@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.2.0
+// @version      0.3.0
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -472,9 +472,73 @@
   // ============================================================
   // 3.5 LLM 模块 — OpenAI 兼容接口
   // ============================================================
+
+  /**
+   * 预设厂商列表（OpenAI 兼容接口）
+   * 修改/添加新厂商只需改这里
+   * models 第一个为该厂商默认推荐模型
+   */
+  const LLM_PROVIDERS = {
+    'deepseek': {
+      label: 'DeepSeek（推荐，便宜）',
+      baseUrl: 'https://api.deepseek.com/v1',
+      models: ['deepseek-chat', 'deepseek-reasoner'],
+      note: '国内，便宜，V3/R1 都有，注册送额度',
+    },
+    'kimi': {
+      label: 'Kimi（Moonshot 月之暗面）',
+      baseUrl: 'https://api.moonshot.cn/v1',
+      models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-k2-0711-preview'],
+      note: '长文本友好，最高 128k context',
+    },
+    'qwen': {
+      label: '通义千问（阿里 DashScope）',
+      baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      models: ['qwen-turbo', 'qwen-plus', 'qwen-max', 'qwen-long'],
+      note: '阿里云，需先在控制台开通 DashScope',
+    },
+    'zhipu': {
+      label: '智谱 BigModel',
+      baseUrl: 'https://open.bigmodel.cn/api/paas/v4/',
+      models: ['glm-4-flash', 'glm-4-air', 'glm-4', 'glm-4-plus'],
+      note: '兼容模式，GLM-4-Flash 限时免费',
+    },
+    'siliconflow': {
+      label: '硅基流动 SiliconFlow',
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      models: ['Qwen/Qwen2.5-7B-Instruct', 'Qwen/Qwen2.5-72B-Instruct', 'deepseek-ai/DeepSeek-V2.5', 'meta-llama/Llama-3.1-8B-Instruct'],
+      note: '聚合站，多模型可选',
+    },
+    'gemini': {
+      label: 'Google Gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+      models: ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-1.5-pro'],
+      note: '需要海外网络',
+    },
+    'openai': {
+      label: 'OpenAI 官方',
+      baseUrl: 'https://api.openai.com/v1',
+      models: ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'],
+      note: '需科学上网，gpt-4o-mini 最便宜',
+    },
+    'ollama': {
+      label: 'Ollama（本地）',
+      baseUrl: 'http://localhost:11434/v1',
+      models: ['llama3.1:8b', 'qwen2.5:7b', 'deepseek-r1:8b'],
+      note: '本地推理免费，API Key 随便填一个字符串',
+    },
+    'custom': {
+      label: '自定义（其他厂商）',
+      baseUrl: '',
+      models: [],
+      note: '填你自己的 Base URL 和 Model 名',
+    },
+  };
+
   const llm = {
     // 配置
     defaults: {
+      provider: 'deepseek',
       baseUrl: 'https://api.deepseek.com/v1',
       apiKey: '',
       model: 'deepseek-chat',
@@ -493,7 +557,31 @@
     },
 
     setConfig(partial) {
-      storage.patch({ settings: { ...storage.state.settings, llm: { ...this.getConfig(), ...partial } } });
+      const cur = this.getConfig();
+      const next = { ...cur, ...partial };
+      // 如果选了非 custom，强制以预设的 baseUrl 为准（除非用户手动改过）
+      if (partial.provider && partial.provider !== 'custom' && LLM_PROVIDERS[partial.provider]) {
+        const preset = LLM_PROVIDERS[partial.provider];
+        if (!partial.baseUrl || partial.baseUrl === LLM_PROVIDERS[cur.provider]?.baseUrl) {
+          next.baseUrl = preset.baseUrl;
+        }
+        if (!partial.model || !preset.models.includes(partial.model)) {
+          next.model = preset.models[0] || '';
+        }
+      }
+      storage.patch({ settings: { ...storage.state.settings, llm: next } });
+    },
+
+    getProviderList() {
+      return Object.entries(LLM_PROVIDERS).map(([k, v]) => ({ key: k, ...v }));
+    },
+
+    getModelList(provider) {
+      return LLM_PROVIDERS[provider]?.models || [];
+    },
+
+    getProviderNote(provider) {
+      return LLM_PROVIDERS[provider]?.note || '';
     },
 
     // 通用 chat 调用
@@ -1097,8 +1185,15 @@ ${sample}
         <div class="bfm-section-title" style="margin-top:24px">🤖 LLM 配置（OpenAI 兼容）</div>
         <div style="font-size:12px;color:#888;margin-bottom:8px">
           用于 AI 智能分组和画像分析。<br>
-          兼容 OpenAI / DeepSeek / Kimi / 智谱 / Ollama 等。<br>
           API Key 仅存储在你的浏览器中，不会上传任何第三方。
+        </div>
+        <div style="margin: 8px 0">
+          <label style="display:inline-block;width:90px">服务商：</label>
+          <select id="bfm-llm-provider" style="width:280px;padding:6px 10px;border:1px solid #ddd;border-radius:4px;font-size:13px">
+            ${llm.getProviderList().map(p =>
+              `<option value="${p.key}" ${lc.provider === p.key ? 'selected' : ''}>${utils.esc(p.label)}</option>`
+            ).join('')}
+          </select>
         </div>
         <div style="margin: 8px 0">
           <label style="display:inline-block;width:90px">Base URL：</label>
@@ -1106,12 +1201,18 @@ ${sample}
         </div>
         <div style="margin: 8px 0">
           <label style="display:inline-block;width:90px">Model：</label>
-          <input id="bfm-llm-model" value="${utils.esc(lc.model)}" placeholder="deepseek-chat" style="width:280px;padding:6px 10px;border:1px solid #ddd;border-radius:4px">
+          <input id="bfm-llm-model" list="bfm-llm-models" value="${utils.esc(lc.model)}" placeholder="deepseek-chat" style="width:280px;padding:6px 10px;border:1px solid #ddd;border-radius:4px">
+          <datalist id="bfm-llm-models">
+            ${llm.getModelList(lc.provider).map(m => `<option value="${utils.esc(m)}">`).join('')}
+          </datalist>
         </div>
         <div style="margin: 8px 0">
           <label style="display:inline-block;width:90px">API Key：</label>
           <input id="bfm-llm-key" type="password" value="${utils.esc(lc.apiKey)}" placeholder="sk-..." style="width:280px;padding:6px 10px;border:1px solid #ddd;border-radius:4px">
           <span id="bfm-llm-status" style="margin-left:8px;font-size:12px"></span>
+        </div>
+        <div id="bfm-llm-note" style="margin:4px 0 8px 94px;font-size:12px;color:#888;min-height:18px">
+          ${utils.esc(llm.getProviderNote(lc.provider))}
         </div>
         <div style="margin-top:12px">
           <button class="bfm-btn bfm-btn-primary" id="bfm-llm-save">保存配置</button>
@@ -1133,6 +1234,7 @@ ${sample}
       });
       body.querySelector('#bfm-llm-save').addEventListener('click', () => {
         llm.setConfig({
+          provider: body.querySelector('#bfm-llm-provider').value,
           baseUrl: body.querySelector('#bfm-llm-url').value.trim(),
           model: body.querySelector('#bfm-llm-model').value.trim(),
           apiKey: body.querySelector('#bfm-llm-key').value.trim(),
@@ -1143,6 +1245,7 @@ ${sample}
       });
       body.querySelector('#bfm-llm-test').addEventListener('click', async () => {
         llm.setConfig({
+          provider: body.querySelector('#bfm-llm-provider').value,
           baseUrl: body.querySelector('#bfm-llm-url').value.trim(),
           model: body.querySelector('#bfm-llm-model').value.trim(),
           apiKey: body.querySelector('#bfm-llm-key').value.trim(),
@@ -1160,6 +1263,19 @@ ${sample}
         }
       });
       body.querySelector('#bfm-llm-profile').addEventListener('click', () => this.runAIProfile());
+
+      // 服务商切换：自动填充 baseUrl + 推荐 model + 更新提示
+      body.querySelector('#bfm-llm-provider').addEventListener('change', (e) => {
+        const key = e.target.value;
+        const list = llm.getProviderList().find(p => p.key === key);
+        if (!list) return;
+        body.querySelector('#bfm-llm-url').value = list.baseUrl;
+        body.querySelector('#bfm-llm-model').value = list.models[0] || '';
+        // 更新 model datalist
+        body.querySelector('#bfm-llm-models').innerHTML =
+          list.models.map(m => `<option value="${utils.esc(m)}">`).join('');
+        body.querySelector('#bfm-llm-note').textContent = list.note || '';
+      });
     },
 
     // ---- 操作 ----
