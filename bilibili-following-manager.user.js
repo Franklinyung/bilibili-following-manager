@@ -1112,6 +1112,7 @@ ${sample}
 
       // 菜单命令
       try {
+        GM_registerMenuCommand('📺 打开管理面板', () => this.openPanel());
         GM_registerMenuCommand('同步关注列表', () => this.runSync());
         GM_registerMenuCommand('刷新活跃度', () => this.runInactiveRefresh());
         GM_registerMenuCommand('导出备份', () => this.exportData());
