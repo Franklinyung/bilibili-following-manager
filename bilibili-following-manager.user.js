@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.4.2
+// @version      0.5.0
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -992,84 +992,558 @@ ${sample}
     shadow: null,         // ShadowRoot：所有 UI 都在这里，规避 B 站检测
     shadowHost: null,
 
-    mount() {
-      // 样式（同时给原页面和 shadow 内 UI 用）
-      const CSS = `
-        .bfm-fab { position: fixed; right: 24px; bottom: 80px; z-index: 9999;
-          width: 48px; height: 48px; border-radius: 50%; border: none; cursor: pointer;
-          background: #00aeec; color: #fff; font-size: 22px; box-shadow: 0 4px 12px rgba(0,0,0,.18);
-          transition: transform .15s;
-        }
-        .bfm-fab:hover { transform: scale(1.08); background: #00b5e5; }
-        .bfm-fab.bfm-busy { background: #fb7299; animation: bfm-spin 1.4s linear infinite; }
-        @keyframes bfm-spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }
+    /**
+     * SVG 图标库（Heroicons-style outline, 16x16 / 24x24）
+     * 用法：utils.icons.tv 或 utils.icons.<name>
+     */
+    icons: {
+      tv: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7a2 2 0 0 1 2-2h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2V7Z"/><path d="m8 21 4-3 4 3"/></svg>',
+      refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.3L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/></svg>',
+      spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3m0 12v3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M3 12h3m12 0h3M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1"/><circle cx="12" cy="12" r="3"/></svg>',
+      download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/></svg>',
+      upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9m0 0-4 4m4-4 4 4M5 3h14"/></svg>',
+      settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>',
+      close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
+      folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>',
+      plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
+      edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4 20 8 8 20H4v-4L16 4Z"/></svg>',
+      trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 7V4h4v3M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg>',
+      chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10m6 10V4m6 16v-7m6 7V13"/></svg>',
+      key: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="14" r="4"/><path d="m11 11 9-9m-3 0h3v3"/></svg>',
+      chevronDown: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>',
+      filter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 9v6l-4-2v-4L3 5Z"/></svg>',
+    },
 
-        .bfm-panel { position: fixed; top: 0; right: 0; height: 100vh; width: ${CONFIG.PANEL_WIDTH}px;
-          max-width: 96vw; background: #fff; box-shadow: -4px 0 18px rgba(0,0,0,.18);
-          z-index: 10000; transform: translateX(100%); transition: transform .25s;
-          display: flex; flex-direction: column; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    mount() {
+      // ============================================================
+      // 设计令牌（Design Tokens）
+      // ============================================================
+      const CSS = `
+        :host {
+          /* Color — 主题色用 B 站蓝作为 accent，主体走中性灰 */
+          --bfm-primary: #00aeec;
+          --bfm-primary-hover: #00b5e5;
+          --bfm-primary-press: #0080bf;
+          --bfm-primary-soft: rgba(0, 174, 236, 0.08);
+          --bfm-accent: #fb7299;
+          --bfm-accent-soft: rgba(251, 114, 153, 0.08);
+          --bfm-success: #10b981;
+          --bfm-warning: #f59e0b;
+          --bfm-danger: #ef4444;
+
+          /* Surface */
+          --bfm-bg: #ffffff;
+          --bfm-bg-alt: #f7f8fa;
+          --bfm-bg-hover: #f1f5f9;
+          --bfm-border: #e5e7eb;
+          --bfm-border-strong: #d1d5db;
+
+          /* Text */
+          --bfm-text: #0f172a;
+          --bfm-text-2: #475569;
+          --bfm-text-3: #94a3b8;
+
+          /* Radius */
+          --bfm-r-sm: 6px;
+          --bfm-r-md: 10px;
+          --bfm-r-lg: 14px;
+          --bfm-r-pill: 999px;
+
+          /* Shadow — 多层柔光 */
+          --bfm-sh-sm: 0 1px 2px rgba(15, 23, 42, .06);
+          --bfm-sh-md: 0 4px 12px -2px rgba(15, 23, 42, .08), 0 1px 2px rgba(15, 23, 42, .04);
+          --bfm-sh-lg: 0 16px 32px -8px rgba(15, 23, 42, .12), 0 4px 8px rgba(15, 23, 42, .04);
+
+          /* Motion */
+          --bfm-ease: cubic-bezier(.4, 0, .2, 1);
+          --bfm-spring: cubic-bezier(.34, 1.56, .64, 1);
+          --bfm-dur: 200ms;
+
+          font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+            "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto,
+            "Helvetica Neue", Arial, sans-serif;
+          font-size: 14px;
+          line-height: 1.5;
+          color: var(--bfm-text);
+        }
+
+        /* ---------- FAB ---------- */
+        .bfm-fab {
+          position: fixed;
+          right: 24px;
+          bottom: 80px;
+          width: 52px;
+          height: 52px;
+          border-radius: 14px;
+          border: none;
+          cursor: pointer;
+          background: linear-gradient(135deg, #00aeec 0%, #0080bf 100%);
+          color: #fff;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow:
+            0 8px 24px -4px rgba(0, 174, 236, .45),
+            0 2px 4px rgba(15, 23, 42, .06),
+            inset 0 1px 0 rgba(255, 255, 255, .25);
+          transition:
+            transform var(--bfm-dur) var(--bfm-spring),
+            box-shadow var(--bfm-dur) var(--bfm-ease);
+          z-index: 9999;
+        }
+        .bfm-fab:hover {
+          transform: translateY(-2px) scale(1.04);
+          box-shadow:
+            0 14px 32px -4px rgba(0, 174, 236, .55),
+            0 4px 8px rgba(15, 23, 42, .08),
+            inset 0 1px 0 rgba(255, 255, 255, .25);
+        }
+        .bfm-fab:active { transform: scale(.96); }
+        .bfm-fab svg { width: 24px; height: 24px; display: block; }
+        .bfm-fab.bfm-busy {
+          background: linear-gradient(135deg, #fb7299 0%, #d94575 100%);
+          animation: bfm-pulse 1.4s var(--bfm-ease) infinite;
+        }
+        @keyframes bfm-pulse {
+          0%, 100% { box-shadow: 0 8px 24px -4px rgba(251, 114, 153, .45); }
+          50%      { box-shadow: 0 8px 32px -4px rgba(251, 114, 153, .75); }
+        }
+
+        /* ---------- Panel ---------- */
+        .bfm-panel {
+          position: fixed;
+          top: 0;
+          right: 0;
+          height: 100vh;
+          width: 460px;
+          max-width: 96vw;
+          background: var(--bfm-bg);
+          box-shadow: var(--bfm-sh-lg);
+          z-index: 10000;
+          transform: translateX(100%);
+          transition: transform 320ms var(--bfm-ease);
+          display: flex;
+          flex-direction: column;
         }
         .bfm-panel.bfm-open { transform: translateX(0); }
-        .bfm-dark .bfm-panel { background: #18191c; color: #e8e8e8; }
 
-        .bfm-head { padding: 14px 16px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 8px; }
-        .bfm-dark .bfm-head { border-bottom-color: #2a2b2f; }
-        .bfm-title { font-size: 16px; font-weight: 600; flex: 1; }
-        .bfm-btn { padding: 6px 10px; border: 1px solid #ddd; background: #fff; border-radius: 4px; cursor: pointer; font-size: 12px; }
-        .bfm-dark .bfm-btn { background: #2a2b2f; border-color: #3a3b3f; color: #e8e8e8; }
-        .bfm-btn:hover { background: #f3f3f3; }
-        .bfm-dark .bfm-btn:hover { background: #353638; }
-        .bfm-btn-primary { background: #00aeec; color: #fff; border-color: #00aeec; }
-        .bfm-btn-primary:hover { background: #00b5e5; }
-        .bfm-btn-danger { background: #fb7299; color: #fff; border-color: #fb7299; }
-        .bfm-btn-danger:hover { background: #fc8aab; }
-        .bfm-btn-ghost { background: transparent; border-color: transparent; color: #888; }
-        .bfm-dark .bfm-btn-ghost { color: #aaa; }
+        /* ---------- Header ---------- */
+        .bfm-head {
+          padding: 20px 22px 18px;
+          border-bottom: 1px solid var(--bfm-border);
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .bfm-brand {
+          width: 32px; height: 32px;
+          border-radius: 9px;
+          background: linear-gradient(135deg, #00aeec 0%, #0080bf 100%);
+          display: flex; align-items: center; justify-content: center;
+          color: #fff; flex-shrink: 0;
+          box-shadow: 0 2px 8px -2px rgba(0, 174, 236, .35);
+        }
+        .bfm-brand svg { width: 18px; height: 18px; }
+        .bfm-title {
+          font-size: 16px;
+          font-weight: 600;
+          letter-spacing: -.01em;
+          flex: 1;
+        }
+        .bfm-title small {
+          display: block;
+          font-size: 11px;
+          font-weight: 400;
+          color: var(--bfm-text-3);
+          margin-top: 1px;
+          letter-spacing: 0;
+        }
 
-        .bfm-tabs { display: flex; padding: 8px 12px; gap: 8px; border-bottom: 1px solid #eee; }
-        .bfm-dark .bfm-tabs { border-bottom-color: #2a2b2f; }
-        .bfm-tab { padding: 6px 12px; border-radius: 16px; cursor: pointer; font-size: 13px; }
-        .bfm-tab:hover { background: #f3f3f3; }
-        .bfm-dark .bfm-tab:hover { background: #2a2b2f; }
-        .bfm-tab.bfm-active { background: #00aeec; color: #fff; }
+        /* ---------- Buttons ---------- */
+        .bfm-btn {
+          padding: 7px 12px;
+          border: 1px solid var(--bfm-border);
+          background: var(--bfm-bg);
+          color: var(--bfm-text);
+          border-radius: var(--bfm-r-sm);
+          cursor: pointer;
+          font-size: 12.5px;
+          font-weight: 500;
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          transition: border-color var(--bfm-dur), background var(--bfm-dur), transform 100ms var(--bfm-ease);
+        }
+        .bfm-btn:hover { background: var(--bfm-bg-hover); border-color: var(--bfm-border-strong); }
+        .bfm-btn:active { transform: scale(.97); }
+        .bfm-btn svg { width: 13px; height: 13px; }
+        .bfm-btn-primary {
+          background: var(--bfm-primary);
+          color: #fff;
+          border-color: var(--bfm-primary);
+        }
+        .bfm-btn-primary:hover {
+          background: var(--bfm-primary-hover);
+          border-color: var(--bfm-primary-hover);
+        }
+        .bfm-btn-ghost {
+          background: transparent;
+          border-color: transparent;
+          color: var(--bfm-text-3);
+        }
+        .bfm-btn-ghost:hover {
+          background: var(--bfm-bg-hover);
+          color: var(--bfm-text);
+        }
+        .bfm-btn-icon {
+          width: 30px; height: 30px; padding: 0;
+          justify-content: center;
+        }
 
-        .bfm-body { flex: 1; overflow: auto; padding: 12px 16px; }
-        .bfm-empty { text-align: center; color: #999; padding: 60px 20px; font-size: 13px; }
-        .bfm-section-title { font-size: 13px; color: #666; margin: 14px 0 6px; font-weight: 600; }
-        .bfm-dark .bfm-section-title { color: #aaa; }
-        .bfm-group { border: 1px solid #eee; border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
-        .bfm-dark .bfm-group { border-color: #2a2b2f; }
-        .bfm-group-head { padding: 8px 12px; background: #fafafa; display: flex; align-items: center; gap: 8px; cursor: pointer; }
-        .bfm-dark .bfm-group-head { background: #212225; }
-        .bfm-group-name { font-weight: 500; flex: 1; }
-        .bfm-group-count { color: #999; font-size: 12px; }
-        .bfm-group-body { padding: 4px 0; }
-        .bfm-up { display: flex; align-items: center; gap: 10px; padding: 6px 12px; }
-        .bfm-up:hover { background: #f7f9fb; }
-        .bfm-dark .bfm-up:hover { background: #212225; }
-        .bfm-up img { width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0; }
-        .bfm-up-name { flex: 1; font-size: 13px; }
-        .bfm-up-meta { font-size: 12px; color: #999; }
-        .bfm-up-meta.bfm-inactive { color: #fb7299; font-weight: 500; }
+        /* ---------- Tabs（分段控件） ---------- */
+        .bfm-tabs {
+          display: flex;
+          padding: 12px 22px;
+          gap: 0;
+          background: var(--bfm-bg);
+          border-bottom: 1px solid var(--bfm-border);
+        }
+        .bfm-tabs-wrap {
+          display: inline-flex;
+          background: var(--bfm-bg-alt);
+          padding: 3px;
+          border-radius: var(--bfm-r-md);
+          gap: 2px;
+        }
+        .bfm-tab {
+          padding: 5px 14px;
+          border-radius: 7px;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--bfm-text-2);
+          transition: color var(--bfm-dur), background var(--bfm-dur);
+          white-space: nowrap;
+        }
+        .bfm-tab:hover { color: var(--bfm-text); }
+        .bfm-tab.bfm-active {
+          background: var(--bfm-bg);
+          color: var(--bfm-text);
+          box-shadow: var(--bfm-sh-sm);
+        }
 
-        .bfm-foot { padding: 10px 16px; border-top: 1px solid #eee; font-size: 12px; color: #888; display: flex; gap: 8px; align-items: center; }
-        .bfm-dark .bfm-foot { border-top-color: #2a2b2f; }
+        /* ---------- Body ---------- */
+        .bfm-body {
+          flex: 1;
+          overflow: auto;
+          padding: 18px 22px;
+          background: var(--bfm-bg);
+        }
+        .bfm-empty {
+          text-align: center;
+          color: var(--bfm-text-3);
+          padding: 48px 20px;
+          font-size: 13px;
+        }
+        .bfm-section-title {
+          font-size: 11px;
+          font-weight: 600;
+          color: var(--bfm-text-3);
+          text-transform: uppercase;
+          letter-spacing: .06em;
+          margin: 16px 0 10px;
+        }
+        .bfm-section-title:first-child { margin-top: 0; }
 
-        .bfm-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 10001; display: flex; align-items: center; justify-content: center; pointer-events: auto; }
-        .bfm-modal { background: #fff; border-radius: 8px; min-width: 360px; max-width: 90vw; padding: 18px 20px; }
-        .bfm-dark .bfm-modal { background: #212225; color: #e8e8e8; }
-        .bfm-modal h3 { margin: 0 0 12px; font-size: 15px; }
-        .bfm-modal input { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; box-sizing: border-box; }
-        .bfm-dark .bfm-modal input { background: #2a2b2f; border-color: #3a3b3f; color: #e8e8e8; }
-        .bfm-modal-actions { margin: 14px 0 0; display: flex; gap: 8px; justify-content: flex-end; }
+        /* ---------- Group Card ---------- */
+        .bfm-group {
+          border: 1px solid var(--bfm-border);
+          border-radius: var(--bfm-r-md);
+          margin-bottom: 10px;
+          overflow: hidden;
+          background: var(--bfm-bg);
+          transition: border-color var(--bfm-dur), box-shadow var(--bfm-dur);
+        }
+        .bfm-group:hover { border-color: var(--bfm-border-strong); box-shadow: var(--bfm-sh-sm); }
+        .bfm-group-head {
+          padding: 10px 14px;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          cursor: pointer;
+          user-select: none;
+        }
+        .bfm-group-name {
+          font-weight: 600;
+          font-size: 13.5px;
+          flex: 1;
+        }
+        .bfm-group-count {
+          font-size: 11.5px;
+          color: var(--bfm-text-3);
+          font-variant-numeric: tabular-nums;
+        }
+        .bfm-group-body { border-top: 1px solid var(--bfm-border); }
 
-        .bfm-progress { padding: 12px 16px; background: #fff8e1; border-bottom: 1px solid #f0e1a8; font-size: 13px; }
-        .bfm-dark .bfm-progress { background: #2d2a1d; border-bottom-color: #4a4530; }
-        .bfm-progress-bar { height: 4px; background: #eee; border-radius: 2px; margin-top: 6px; overflow: hidden; }
-        .bfm-progress-bar > div { height: 100%; background: #00aeec; transition: width .2s; }
+        /* ---------- UP Row ---------- */
+        .bfm-up {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 8px 14px;
+          transition: background var(--bfm-dur);
+        }
+        .bfm-up:hover { background: var(--bfm-bg-alt); }
+        .bfm-up img {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          flex-shrink: 0;
+          background: var(--bfm-bg-alt);
+          object-fit: cover;
+        }
+        .bfm-up-name {
+          flex: 1;
+          font-size: 13px;
+          font-weight: 500;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .bfm-up-meta {
+          font-size: 11.5px;
+          color: var(--bfm-text-3);
+          font-variant-numeric: tabular-nums;
+        }
+        .bfm-up-meta.bfm-inactive {
+          color: var(--bfm-accent);
+          font-weight: 600;
+        }
 
+        /* ---------- Tag (group label) ---------- */
+        .bfm-tag {
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+          padding: 2px 8px;
+          background: var(--bfm-primary-soft);
+          color: var(--bfm-primary-press);
+          border-radius: var(--bfm-r-pill);
+          font-size: 10.5px;
+          font-weight: 600;
+          letter-spacing: .02em;
+        }
+
+        /* ---------- Footer ---------- */
+        .bfm-foot {
+          padding: 12px 22px;
+          border-top: 1px solid var(--bfm-border);
+          font-size: 11.5px;
+          color: var(--bfm-text-3);
+          display: flex;
+          gap: 8px;
+          align-items: center;
+          background: var(--bfm-bg);
+        }
+        .bfm-foot b {
+          color: var(--bfm-text);
+          font-variant-numeric: tabular-nums;
+          font-weight: 600;
+        }
+
+        /* ---------- Action Bar ---------- */
+        .bfm-actionbar {
+          padding: 12px 22px 16px;
+          display: flex;
+          gap: 8px;
+          border-top: 1px solid var(--bfm-border);
+          background: var(--bfm-bg);
+        }
+        .bfm-actionbar .bfm-btn { flex: 1; justify-content: center; padding: 9px 12px; }
+        .bfm-actionbar .bfm-btn-icon { flex: 0 0 38px; }
+
+        /* ---------- Progress ---------- */
+        .bfm-progress {
+          padding: 10px 22px;
+          background: var(--bfm-bg-alt);
+          border-bottom: 1px solid var(--bfm-border);
+          font-size: 12px;
+          color: var(--bfm-text-2);
+        }
+        .bfm-progress-bar {
+          height: 3px;
+          background: rgba(0, 174, 236, .15);
+          border-radius: 2px;
+          margin-top: 8px;
+          overflow: hidden;
+          position: relative;
+        }
+        .bfm-progress-bar > div {
+          position: absolute;
+          inset: 0 auto 0 0;
+          background: linear-gradient(90deg, #00aeec 0%, #fb7299 100%);
+          border-radius: 2px;
+          transition: width 300ms var(--bfm-ease);
+        }
+
+        /* ---------- Modal ---------- */
+        .bfm-modal-mask {
+          position: fixed;
+          inset: 0;
+          background: rgba(15, 23, 42, .55);
+          backdrop-filter: blur(4px);
+          -webkit-backdrop-filter: blur(4px);
+          z-index: 10001;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 20px;
+          pointer-events: auto;
+          animation: bfm-fade-in 200ms var(--bfm-ease);
+        }
+        @keyframes bfm-fade-in { from { opacity: 0; } to { opacity: 1; } }
+        .bfm-modal {
+          background: var(--bfm-bg);
+          border-radius: var(--bfm-r-lg);
+          min-width: 360px;
+          max-width: 90vw;
+          max-height: 80vh;
+          overflow: auto;
+          padding: 22px 24px;
+          box-shadow: var(--bfm-sh-lg);
+          display: flex;
+          flex-direction: column;
+          animation: bfm-modal-in 280ms var(--bfm-spring);
+        }
+        @keyframes bfm-modal-in {
+          from { opacity: 0; transform: translateY(8px) scale(.96); }
+          to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .bfm-modal h3 {
+          margin: 0 0 16px;
+          font-size: 16px;
+          font-weight: 600;
+          letter-spacing: -.01em;
+        }
+        .bfm-modal input,
+        .bfm-modal select {
+          width: 100%;
+          padding: 9px 12px;
+          border: 1px solid var(--bfm-border);
+          border-radius: var(--bfm-r-sm);
+          font-size: 13.5px;
+          box-sizing: border-box;
+          background: var(--bfm-bg);
+          color: var(--bfm-text);
+          transition: border-color var(--bfm-dur), box-shadow var(--bfm-dur);
+          font-family: inherit;
+        }
+        .bfm-modal input:focus,
+        .bfm-modal select:focus {
+          outline: none;
+          border-color: var(--bfm-primary);
+          box-shadow: 0 0 0 3px var(--bfm-primary-soft);
+        }
+        .bfm-modal label {
+          display: inline-block;
+          font-size: 12px;
+          color: var(--bfm-text-2);
+          margin-bottom: 5px;
+          font-weight: 500;
+        }
+        .bfm-modal-actions {
+          margin-top: 18px;
+          display: flex;
+          gap: 8px;
+          justify-content: flex-end;
+        }
+        .bfm-modal-note {
+          font-size: 11.5px;
+          color: var(--bfm-text-3);
+          margin-top: 4px;
+          line-height: 1.5;
+        }
+
+        /* AI suggestion row */
+        .bfm-sug-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 9px 12px;
+          border-bottom: 1px solid var(--bfm-border);
+          cursor: pointer;
+          transition: background var(--bfm-dur);
+        }
+        .bfm-sug-row:hover { background: var(--bfm-bg-alt); }
+        .bfm-sug-row:last-child { border-bottom: none; }
+        .bfm-sug-row input[type="checkbox"] {
+          width: 16px; height: 16px;
+          accent-color: var(--bfm-primary);
+        }
+        .bfm-sug-row > span:nth-child(2) { flex: 1; font-size: 13px; }
+
+        .bfm-tag-pill {
+          padding: 3px 10px;
+          border-radius: var(--bfm-r-pill);
+          font-size: 11px;
+          font-weight: 600;
+          background: var(--bfm-primary);
+          color: #fff;
+          white-space: nowrap;
+        }
+        .bfm-tag-pill.bfm-tag-new {
+          background: var(--bfm-accent);
+        }
+        .bfm-sug-reason {
+          font-size: 11.5px;
+          color: var(--bfm-text-3);
+          max-width: 200px;
+          text-align: right;
+          line-height: 1.4;
+        }
+
+        /* Profile tag cloud */
+        .bfm-tag-cloud {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          margin-top: 8px;
+        }
+        .bfm-tag-cloud span {
+          background: var(--bfm-primary);
+          color: #fff;
+          padding: 5px 12px;
+          border-radius: var(--bfm-r-pill);
+          font-size: 12px;
+          font-weight: 500;
+        }
+        .bfm-tag-cloud.bfm-tag-warn span {
+          background: var(--bfm-accent);
+        }
+
+        /* Original page styles */
         .bfm-hidden-by-group { display: none !important; }
-        .bfm-check { position: absolute; top: 8px; left: 8px; width: 18px; height: 18px; cursor: pointer; z-index: 2; }
+        .bfm-check { position: absolute; top: 8px; left: 8px; width: 18px; height: 18px; cursor: pointer; z-index: 2; accent-color: var(--bfm-primary); }
+
+        /* Dark mode (system) */
+        @media (prefers-color-scheme: dark) {
+          :host {
+            --bfm-bg: #1a1b1f;
+            --bfm-bg-alt: #25262b;
+            --bfm-bg-hover: #2d2e34;
+            --bfm-border: #2e2f35;
+            --bfm-border-strong: #3e3f47;
+            --bfm-text: #e8e8e8;
+            --bfm-text-2: #a8aab0;
+            --bfm-text-3: #6e7079;
+            --bfm-primary-soft: rgba(0, 174, 236, .14);
+            --bfm-accent-soft: rgba(251, 114, 153, .14);
+            --bfm-sh-sm: 0 1px 2px rgba(0,0,0,.3);
+            --bfm-sh-md: 0 4px 12px -2px rgba(0,0,0,.4), 0 1px 2px rgba(0,0,0,.3);
+            --bfm-sh-lg: 0 16px 32px -8px rgba(0,0,0,.5), 0 4px 8px rgba(0,0,0,.3);
+          }
+          .bfm-modal-mask { background: rgba(0,0,0,.7); }
+        }
       `;
       // 原页面需要 bfm-hidden-by-group / bfm-check 样式（注入到 document）
       GM_addStyle(`
@@ -1099,7 +1573,7 @@ ${sample}
       // FAB 按钮（放在 shadow 内）
       this.btnEl = document.createElement('button');
       this.btnEl.className = 'bfm-fab';
-      this.btnEl.textContent = '📺';
+      this.btnEl.innerHTML = this.icons.tv;
       this.btnEl.title = 'B 站关注管理';
       this.btnEl.style.pointerEvents = 'auto';
       this.btnEl.addEventListener('click', () => this.toggle());
@@ -1112,7 +1586,7 @@ ${sample}
 
       // 菜单命令
       try {
-        GM_registerMenuCommand('📺 打开管理面板', () => this.openPanel());
+        GM_registerMenuCommand('打开管理面板', () => this.openPanel());
         GM_registerMenuCommand('同步关注列表', () => this.runSync());
         GM_registerMenuCommand('刷新活跃度', () => this.runInactiveRefresh());
         GM_registerMenuCommand('导出备份', () => this.exportData());
@@ -1174,25 +1648,33 @@ ${sample}
       this.panelEl.className = 'bfm-panel';
       this.panelEl.innerHTML = `
         <div class="bfm-head">
-          <span class="bfm-title">📺 关注管理</span>
-          <button class="bfm-btn bfm-btn-primary" data-act="sync">同步</button>
-          <button class="bfm-btn" data-act="inactive">刷新活跃度</button>
-          <button class="bfm-btn" data-act="ai-group" title="AI 智能分组">🤖 AI 分组</button>
-          <button class="bfm-btn" data-act="export">导出</button>
-          <button class="bfm-btn" data-act="import">导入</button>
-          <button class="bfm-btn bfm-btn-ghost" data-act="close">×</button>
+          <div class="bfm-brand">${this.icons.tv}</div>
+          <div class="bfm-title">
+            关注管理
+            <small>Following Manager</small>
+          </div>
+          <button class="bfm-btn bfm-btn-icon bfm-btn-ghost" data-act="close" title="关闭">${this.icons.close}</button>
         </div>
         <div class="bfm-progress" style="display:none"></div>
         <div class="bfm-tabs">
-          <div class="bfm-tab bfm-active" data-view="groups">分组</div>
-          <div class="bfm-tab" data-view="inactive">死粉候选</div>
-          <div class="bfm-tab" data-view="settings">设置</div>
+          <div class="bfm-tabs-wrap">
+            <div class="bfm-tab bfm-active" data-view="groups">分组</div>
+            <div class="bfm-tab" data-view="inactive">死粉</div>
+            <div class="bfm-tab" data-view="settings">设置</div>
+          </div>
         </div>
         <div class="bfm-body"></div>
         <div class="bfm-foot">
           <span>共 <b data-foot-count>0</b> 位关注</span>
           <span style="flex:1"></span>
-          <span data-foot-sync></span>
+          <span data-foot-sync>尚未同步</span>
+        </div>
+        <div class="bfm-actionbar">
+          <button class="bfm-btn" data-act="sync" title="同步关注列表">${this.icons.refresh}<span>同步</span></button>
+          <button class="bfm-btn" data-act="inactive" title="刷新活跃度">${this.icons.refresh}<span>活跃度</span></button>
+          <button class="bfm-btn bfm-btn-primary" data-act="ai-group" title="AI 智能分组">${this.icons.spark}<span>AI 分组</span></button>
+          <button class="bfm-btn" data-act="export" title="导出备份">${this.icons.download}</button>
+          <button class="bfm-btn" data-act="import" title="导入备份">${this.icons.upload}</button>
         </div>
       `;
       // shadowHost 已在 mount() 时挂到 document.documentElement，这里不再动它
@@ -1365,7 +1847,7 @@ ${sample}
           <button class="bfm-btn" id="bfm-save-threshold">保存</button>
         </div>
 
-        <div class="bfm-section-title" style="margin-top:24px">🤖 LLM 配置（OpenAI 兼容）</div>
+        <div class="bfm-section-title" style="margin-top:24px">LLM 配置（OpenAI 兼容）</div>
         <div style="font-size:12px;color:#888;margin-bottom:8px">
           用于 AI 智能分组和画像分析。<br>
           API Key 仅存储在你的浏览器中，不会上传任何第三方。
@@ -1400,7 +1882,7 @@ ${sample}
         <div style="margin-top:12px">
           <button class="bfm-btn bfm-btn-primary" id="bfm-llm-save">保存配置</button>
           <button class="bfm-btn" id="bfm-llm-test">测试连通</button>
-          <button class="bfm-btn" id="bfm-llm-profile">📊 AI 画像分析</button>
+          <button class="bfm-btn" id="bfm-llm-profile">AI 画像分析</button>
         </div>
 
         <div style="margin-top:24px;color:#888;font-size:12px">
@@ -1602,7 +2084,7 @@ ${sample}
       mask.className = 'bfm-modal-mask';
       mask.innerHTML = `
         <div class="bfm-modal" style="min-width:560px;max-height:80vh;display:flex;flex-direction:column">
-          <h3>🤖 AI 分组建议（共 ${suggestions.length} 条）</h3>
+          <h3>AI 分组建议（共 ${suggestions.length} 条）</h3>
           <div style="font-size:12px;color:#888;margin-bottom:10px">
             默认全选；可取消单项；分组名按现有/新建区分显示。
           </div>
@@ -1711,7 +2193,7 @@ ${sample}
       `).join('');
       mask.innerHTML = `
         <div class="bfm-modal" style="min-width:480px">
-          <h3>📊 你的关注画像</h3>
+          <h3>你的关注画像</h3>
           <div style="margin:12px 0">
             <div style="font-weight:600;margin-bottom:6px">兴趣关键词：</div>
             <div>${(result.profile || []).map(p => `<span style="display:inline-block;background:#00aeec;color:#fff;padding:4px 12px;border-radius:14px;margin:4px;font-size:13px">${utils.esc(p)}</span>`).join('') || '<i style="color:#888">无</i>'}</div>
@@ -1806,7 +2288,7 @@ ${sample}
       bar.id = 'bfm-follow-toolbar';
       bar.style.cssText = 'position:sticky;top:0;z-index:100;background:#00aeec;color:#fff;padding:8px 12px;display:flex;gap:8px;align-items:center;font-size:13px;border-radius:4px;margin-bottom:8px';
       bar.innerHTML = `
-        <span>📺 <b>关注管理</b></span>
+        <span><b>关注管理</b></span>
         <span style="flex:1"></span>
         <button id="bfm-batch-toggle" style="background:#fff;color:#00aeec;border:none;padding:6px 12px;border-radius:4px;cursor:pointer">开启批量</button>
         <button id="bfm-batch-assign" style="background:#fb7299;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;display:none">将选中 (0) 加入分组</button>
@@ -1987,7 +2469,7 @@ ${sample}
             ${utils.esc(g.name)} (${cnt})
           </button>`;
         }).join('');
-        wrap.innerHTML = `<span style="color:#888;margin-right:6px">📺 分组：</span>
+        wrap.innerHTML = `<span style="color:var(--bfm-text-3);font-size:12px;margin-right:8px;font-weight:500">分组筛选</span>
           <button data-gid="__none__" style="padding:4px 12px;border-radius:14px;border:1px solid ${!activeId ? '#00aeec' : '#ddd'};background:${!activeId ? '#00aeec' : '#fff'};color:${!activeId ? '#fff' : '#333'};cursor:pointer;font-size:12px">全部</button>
           ${items}`;
         wrap.querySelectorAll('[data-gid]').forEach(b => {
@@ -2037,7 +2519,7 @@ ${sample}
         (this.shadow || document.body).appendChild(tip);
       }
       const g = storage.state.groups.find(g => g.tagid === this.activeGroup);
-      tip.textContent = `📺 仅显示分组：${g?.name || ''}（已隐藏 ${hidden} 条）`;
+      tip.textContent = `仅显示分组：${g?.name || ''}（已隐藏 ${hidden} 条）`;
     },
   };
 
