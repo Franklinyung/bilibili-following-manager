@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.4.1
+// @version      0.4.2
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -2055,6 +2055,22 @@ ${sample}
       } else if (location.host === 't.bilibili.com') {
         injectDynamicPage.mount();
       }
+
+      // 暴露全局兜底入口：即使 FAB/菜单都失效，在 Console 输入 BFM.open() 也能用
+      window.BFM = {
+        open: () => ui.openPanel(),
+        sync: () => ui.runSync(),
+        inactive: () => ui.runInactiveRefresh(),
+        export: () => ui.exportData(),
+        import: () => ui.importData(),
+        debug: () => ({
+            fab: ui.shadow?.querySelector('.bfm-fab'),
+            panel: ui.panelEl,
+            shadow: ui.shadow,
+            storage: storage.state,
+            version: storage.state.version,
+          }),
+      };
     } catch (e) {
       // 任何初始化异常都要可见，避免"脚本没反应"又无从查起
       console.error('[BFM] 初始化失败:', e);
