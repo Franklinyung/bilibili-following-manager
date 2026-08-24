@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.5.1
+// @version      0.5.2
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -1552,9 +1552,10 @@ ${sample}
       `);
 
       // 创建 Shadow DOM host（B 站检测代码看不到 shadow 内部）
+      // host 用 display:contents 不产生盒子，shadow 内 fixed 元素自然相对视口定位
       this.shadowHost = document.createElement('div');
       this.shadowHost.id = 'bfm-shadow-host';
-      this.shadowHost.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483646;pointer-events:none';
+      this.shadowHost.style.cssText = 'all:initial;display:contents;color-scheme:light dark';
       document.documentElement.appendChild(this.shadowHost);
       this.shadow = this.shadowHost.attachShadow({ mode: 'open' });
 
@@ -1563,55 +1564,14 @@ ${sample}
       styleEl.textContent = CSS;
       this.shadow.appendChild(styleEl);
 
-      // 创建 Shadow DOM host（B 站检测代码看不到 shadow 内部）
-      this.shadowHost = document.createElement('div');
-      this.shadowHost.id = 'bfm-shadow-host';
-      this.shadowHost.style.cssText = 'all:initial;position:fixed;inset:0;z-index:2147483646;pointer-events:none';
-      document.documentElement.appendChild(this.shadowHost);
-      this.shadow = this.shadowHost.attachShadow({ mode: 'open' });
-
-      // FAB 按钮 — 独立挂到 documentElement，不进 Shadow DOM
-      // （Chrome 在 shadow 内的 position:fixed 有渲染 bug，会相对 host 算而不是视口）
+      // FAB 按钮 — 放回 Shadow DOM 躲 B 站反广告检测
+      // host 用 display:contents 不产生盒子，shadow 内 fixed 元素自然相对视口定位
       this.btnEl = document.createElement('button');
       this.btnEl.className = 'bfm-fab';
       this.btnEl.innerHTML = this.icons.tv;
       this.btnEl.title = 'B 站关注管理';
       this.btnEl.addEventListener('click', () => this.toggle());
-      document.documentElement.appendChild(this.btnEl);
-
-      // FAB 也需要样式 + FAB 内部使用 SVG
-      GM_addStyle(`
-          .bfm-fab { position: fixed !important; right: 24px !important; bottom: 80px !important;
-            width: 52px; height: 52px; border-radius: 14px; border: none; cursor: pointer;
-            background: linear-gradient(135deg, #00aeec 0%, #fb7299 100%);
-            color: #fff;
-            display: flex; align-items: center; justify-content: center;
-            box-shadow:
-              0 10px 28px -4px rgba(0, 174, 236, .45),
-              0 2px 6px rgba(15, 23, 42, .10),
-              inset 0 1px 0 rgba(255, 255, 255, .30);
-            transition: transform 220ms cubic-bezier(.34, 1.56, .64, 1),
-                        box-shadow 200ms cubic-bezier(.4, 0, .2, 1);
-            z-index: 2147483646;
-          }
-          .bfm-fab:hover {
-            transform: translateY(-2px) scale(1.05);
-            box-shadow:
-              0 16px 36px -4px rgba(0, 174, 236, .55),
-              0 4px 10px rgba(15, 23, 42, .12),
-              inset 0 1px 0 rgba(255, 255, 255, .30);
-          }
-          .bfm-fab:active { transform: scale(.96); }
-          .bfm-fab svg { width: 24px; height: 24px; display: block; }
-          .bfm-fab.bfm-busy {
-            background: linear-gradient(135deg, #fb7299 0%, #d94575 100%);
-            animation: bfm-pulse 1.4s cubic-bezier(.4, 0, .2, 1) infinite;
-          }
-          @keyframes bfm-pulse {
-            0%, 100% { box-shadow: 0 10px 28px -4px rgba(251, 114, 153, .45); }
-            50%      { box-shadow: 0 10px 36px -4px rgba(251, 114, 153, .75); }
-          }
-        `);
+      this.shadow.appendChild(this.btnEl);
 
       // 跟随深色模式
       if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
