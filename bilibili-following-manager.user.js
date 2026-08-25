@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.9.0
+// @version      0.9.1
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -910,16 +910,16 @@ ${userList}
      * 汇总关注列表，返回兴趣画像 + 推荐新分组
      */
     async analyzeProfile(sampleUsers) {
-      // 抽样：取最多 200 个 UP 主，按关注时间倒序优先
+      // 抽样：取最多 200 个 UP 主，传入 mid 让 AI 能精确指认
       const sample = sampleUsers.slice(0, 200).map(u =>
-        `- ${u.uname} | ${u.sign || ''}`
+        `- mid=${u.mid} | ${u.uname} | ${u.sign || ''}`
       ).join('\n');
 
       const prompt = `分析以下 B 站用户关注的 UP 主列表，给出：
 
 1. **兴趣画像**：用 3-5 个关键词概括
 2. **建议的新分组**：列出 5-8 个合理分组（基于关注结构推测用户尚未创建的分组）
-4. **可能误关注 / 死粉**：识别那些看起来与主兴趣无关的 UP 主（仅返回名字）
+3. **可能误关注**：识别那些看起来与主兴趣无关的 UP 主（返回 mid 和 name，必须严格按下方格式）
 
 UP 主列表（共 ${sampleUsers.length} 个，抽样展示前 ${Math.min(200, sampleUsers.length)} 个）：
 ${sample}
@@ -928,7 +928,7 @@ ${sample}
 {
   "profile": ["关键词1", "关键词2"],
   "suggestedGroups": [{"name":"分组名","reason":"为什么需要这个分组"}],
-  "outliers": ["UP主名字"]
+  "outliers": [{"mid": 12345, "name": "UP主名字"}]
 }`;
 
       const content = await this.chat([
@@ -2451,6 +2451,32 @@ ${sample}
           <span style="color:#888;font-size:12px;margin-left:8px">${utils.esc(g.reason || '')}</span>
         </li>
       `).join('');
+      // 兼容老 AI 输出格式（数组或对象）和新格式（[{mid, name}]）：
+      // 老：`outliers: ["名字1", "名字2"]`
+      // 新：`outliers: [{mid: 1, name: "名字1"}, ...]`
+      const outliers = (result.outliers || []).map(o => {
+        if (typeof o === 'string') return { mid: null, name: o };
+        const mid = Number(o?.mid);
+        return {
+          mid: Number.isFinite(mid) && mid > 0 ? mid : null,
+          name: String(o?.name || ''),
+        };
+      });
+      const validOutliers = outliers.filter(o => o.mid);
+      const outliersHtml = outliers.length === 0
+        ? '<i style="color:#888">无</i>'
+        : outliers.map(o => `
+          <label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px dashed var(--bfm-border);cursor:pointer">
+            <input type="checkbox" class="bfm-outlier-cb" data-mid="${o.mid || ''}" data-name="${utils.esc(o.name)}"
+              ${o.mid ? '' : 'disabled title="AI 未返回 mid，需手动取关"'}
+              style="width:16px;height:16px;accent-color:var(--bfm-primary)">
+            <span style="flex:1;font-size:13px">${utils.esc(o.name)}</span>
+            ${o.mid
+              ? `<span style="font-size:11px;color:var(--bfm-text-3)">mid:${o.mid}</span>
+                 <a class="bfm-btn bfm-btn-ghost bfm-btn-icon" href="https://space.bilibili.com/${o.mid}" target="_blank" title="查看空间">↗</a>`
+              : '<span style="font-size:11px;color:var(--bfm-accent)">无 mid</span>'}
+          </label>
+        `).join('');
       mask.innerHTML = `
         <div class="bfm-modal" style="min-width:480px">
           <h3>你的关注画像</h3>
@@ -2464,16 +2490,45 @@ ${sample}
           </div>
           <div style="margin:12px 0">
             <div style="font-weight:600;margin-bottom:6px">疑似误关注：</div>
-            <div>${(result.outliers || []).map(o => `<span style="display:inline-block;background:#fb7299;color:#fff;padding:4px 12px;border-radius:14px;margin:4px;font-size:13px">${utils.esc(o)}</span>`).join('') || '<i style="color:#888">无</i>'}</div>
+            ${outliersHtml}
           </div>
           <div class="bfm-modal-actions">
             <button class="bfm-btn" data-act="close">关闭</button>
+            ${validOutliers.length ? `
+              <button class="bfm-btn" id="bfm-outlier-select-all">全选</button>
+              <span style="color:var(--bfm-text-2);font-size:12px">已选 <b id="bfm-outlier-count">0</b></span>
+              <button class="bfm-btn bfm-btn-danger" id="bfm-outlier-unfollow" disabled style="opacity:.5">取消关注</button>
+            ` : ''}
           </div>
         </div>
       `;
       mask.style.pointerEvents = 'auto';
       (ui.shadow || document.body).appendChild(mask);
       mask.querySelector('[data-act="close"]').addEventListener('click', () => mask.remove());
+
+      if (validOutliers.length) {
+        const checkboxes = mask.querySelectorAll('.bfm-outlier-cb:not([disabled])');
+        const countEl = mask.querySelector('#bfm-outlier-count');
+        const btn = mask.querySelector('#bfm-outlier-unfollow');
+        const updateCount = () => {
+          const n = mask.querySelectorAll('.bfm-outlier-cb:checked').length;
+          countEl.textContent = n;
+          btn.disabled = n === 0;
+          btn.style.opacity = n === 0 ? '.5' : '1';
+        };
+        checkboxes.forEach(cb => cb.addEventListener('change', updateCount));
+        mask.querySelector('#bfm-outlier-select-all').addEventListener('click', () => {
+          checkboxes.forEach(cb => cb.checked = true);
+          updateCount();
+        });
+        btn.addEventListener('click', async () => {
+          const mids = Array.from(mask.querySelectorAll('.bfm-outlier-cb:checked'))
+            .map(cb => Number(cb.dataset.mid))
+            .filter(Boolean);
+          mask.remove();
+          await this.runBatchUnfollow(mids);
+        });
+      }
     },
 
     async importData() {

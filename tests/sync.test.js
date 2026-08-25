@@ -28,9 +28,9 @@ test('.user.js 暴露 getUndetected 方法', () => {
   assert.match(content, /getUndetected\s*\(\s*\)\s*\{/, '应暴露 getUndetected 方法供 UI 调用');
 });
 
-test('.user.js @version 已升级到 v0.9.0', () => {
+test('.user.js @version 已升级到 v0.9.1', () => {
   const content = readFileSync(USER_JS, 'utf8');
-  assert.match(content, /@version\s+0\.9\.0/, '部署版本必须是 v0.9.0');
+  assert.match(content, /@version\s+0\.9\.1/, '部署版本必须是 v0.9.1');
 });
 
 test('.user.js 不应包含 @require CDN（v0.4.0 后已切内联 MD5）', () => {
@@ -56,4 +56,22 @@ test('.user.js 取关有二次确认', () => {
   assert.match(content, /确认取关/);
   assert.match(content, /data-act="cancel"/, '必须有取消按钮');
   assert.match(content, /data-act="confirm"/, '必须有确认按钮');
+});
+
+test('.user.js 画像分析 outliers 字段要求 AI 返回 {mid, name}', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  // prompt 里必须告诉 AI 返回 mid
+  assert.match(content, /outliers.*mid.*name/s,
+    'analyzeProfile 的 prompt 必须让 AI 返回 [{mid, name}]');
+  // 渲染逻辑必须兼容旧格式（纯字符串数组）
+  assert.match(content, /typeof o === 'string'/,
+    '_showProfileResult 必须兼容旧 AI 输出格式');
+});
+
+test('.user.js 疑似误关注列表支持批量取关', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  assert.match(content, /bfm-outlier-cb/, '必须有 outliers checkbox class');
+  assert.match(content, /bfm-outlier-unfollow/, '必须有 outliers 批量取关按钮');
+  assert.match(content, /runBatchUnfollow\(mids\)/,
+    'outliers 批量取关必须复用 runBatchUnfollow，不可另写一份');
 });

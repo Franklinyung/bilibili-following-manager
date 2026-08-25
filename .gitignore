@@ -4,3 +4,9 @@ node_modules/
 dist/
 .tmp/
 *.bak
+
+# 本地开发档案，不上传到 GitHub
+DEVELOPMENT.md
+NOTES*.md
+LOCAL*.md
+*.local.md
