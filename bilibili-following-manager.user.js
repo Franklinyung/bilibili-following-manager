@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.9.3
+// @version      0.10.0
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -240,6 +240,22 @@
       return `${Math.floor(n / 365)} 年前`;
     },
 
+    /**
+     * UP 主是否有未读新动态（红点）
+     * - 没 dynamic_ts（没测过活跃度）→ false
+     * - 没 lastSeen（用户从未看过）→ true
+     * - lastSeen < dynamic_ts → true（新动态）
+     * - 否则 false（已读）
+     * @param {{mid:number, dynamic_ts?:number}} u
+     * @param {Object} lastSeenMap storage.state.lastSeen
+     * @returns {boolean}
+     */
+    hasNewDynamic(u, lastSeenMap) {
+      if (!u || !u.dynamic_ts) return false;
+      const lastSeen = lastSeenMap?.[u.mid] || 0;
+      return u.dynamic_ts > lastSeen;
+    },
+
     // HTML 转义
     esc(s) {
       return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -341,7 +357,7 @@
   // ============================================================
   // 2. 持久化存储 (storage)
   // ============================================================
-  const STORAGE_VERSION = 2;   // 当前版本，破坏性变更时 +1 并写迁移
+  const STORAGE_VERSION = 3;   // 当前版本，破坏性变更时 +1 并写迁移
   const storage = {
     state: null,
 
@@ -350,11 +366,13 @@
         version: STORAGE_VERSION,
         mid: null,                  // 自己的 mid
         groups: [],                 // [{tagid, name, count}]
-        following: {},              // mid -> {mid, uname, face, tagids:[], mtime, lastActive}
+        following: {},              // mid -> {mid, uname, face, tagids:[], mtime, lastActive, dynamic_ts}
         settings: {
           inactiveThresholdDays: CONFIG.INACTIVE_DAYS,
           panelCollapsed: false,
         },
+        lastSeen: {},              // {mid: timestamp} 用户最后一次查看该 UP 的时间
+        aiOutliers: null,           // AI 画像分析推断的疑似误关注 {items, updatedAt}
         lastSync: 0,
       };
     },
@@ -392,6 +410,19 @@
         // v1 → v2: 当前示例，未发生结构变化，仅升版本号
         // 未来示例：if (v < 2) { s.following = renameKeys(s.following); }
         s.version = 2;
+      }
+      if (v < 3) {
+        // v2 → v3: 加 lastSeen 字段（用户查看 UP 时间戳，用于红点）
+        s.lastSeen = s.lastSeen || {};
+        // 同时把已有 lastActive 复制成 dynamic_ts（如果还没有）
+        for (const mid in s.following || {}) {
+          if (s.following[mid] && !s.following[mid].dynamic_ts && s.following[mid].lastActive) {
+            s.following[mid].dynamic_ts = s.following[mid].lastActive;
+          }
+        }
+        // aiOutliers 是 v3 新加的，旧数据自然没有
+        s.aiOutliers = s.aiOutliers || null;
+        s.version = 3;
       }
       return s;
     },
@@ -1060,6 +1091,9 @@ ${sample}
           if (v) {
             storage.state.following[u.mid].lastActive = v.created;
             storage.state.following[u.mid].lastTitle = v.title;
+            // dynamic_ts 与 lastActive 用同一时间戳（最新视频时间）
+            // 后续如果接入真正的"动态时间"接口，可独立更新
+            storage.state.following[u.mid].dynamic_ts = v.created;
           } else {
             storage.state.following[u.mid].lastActive = storage.state.following[u.mid].lastActive || 0;
           }
@@ -1422,6 +1456,38 @@ ${sample}
           color: var(--bfm-accent);
           font-weight: 600;
         }
+
+        /* 新动态红点 */
+        .bfm-new-dot {
+          display: inline-block;
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: var(--bfm-accent);
+          margin-left: 6px;
+          flex-shrink: 0;
+          box-shadow: 0 0 0 2px rgba(251, 114, 153, .25);
+          animation: bfm-new-pulse 2s var(--bfm-ease) infinite;
+        }
+        @keyframes bfm-new-pulse {
+          0%, 100% { box-shadow: 0 0 0 2px rgba(251, 114, 153, .25); transform: scale(1); }
+          50%      { box-shadow: 0 0 0 5px rgba(251, 114, 153, .10); transform: scale(1.15); }
+        }
+
+        /* 标星按钮（特别关注） */
+        .bfm-star-btn {
+          background: transparent;
+          border: none;
+          cursor: pointer;
+          font-size: 16px;
+          line-height: 1;
+          padding: 4px 6px;
+          color: var(--bfm-text-3);
+          transition: transform 120ms var(--bfm-ease), color 120ms var(--bfm-ease);
+          flex-shrink: 0;
+        }
+        .bfm-star-btn:hover { transform: scale(1.2); color: var(--bfm-warning); }
+        .bfm-star-btn.is-starred { color: var(--bfm-warning); }
 
         /* ---------- Tag (group label) ---------- */
         .bfm-tag {
@@ -1932,6 +1998,33 @@ ${sample}
       }).join('');
     },
 
+    // 读取 AI 推断的疑似误关注（7 天内有效，过期清掉）
+    _loadAiOutliers() {
+      const data = storage.state.aiOutliers;
+      if (!data || !data.items?.length) return [];
+      const SEVEN_DAYS = 7 * 86400 * 1000;
+      if (Date.now() - (data.updatedAt || 0) > SEVEN_DAYS) {
+        storage.state.aiOutliers = null;
+        storage.save();
+        return [];
+      }
+      // 只保留仍然在关注列表里的 mid
+      return data.items.filter(o => o.mid && storage.state.following[o.mid]);
+    },
+
+    // 给 AI outlier 分 3 类
+    _classifyOutlier(name, u) {
+      if (/已注销|账号已注销/.test(name || '')) {
+        return { label: '已注销', color: '#94a3b8' };
+      }
+      const days = utils.daysSince(u.lastActive);
+      if (days > 365) {
+        return { label: '永久停更', color: '#ef4444' };
+      }
+      // 其余：内容变质/疑似误关注
+      return { label: '内容变质', color: '#fb7299' };
+    },
+
     renderInactive(body) {
       const dead = storage.getInactiveCandidates();
       const undetected = storage.getUndetected();
@@ -1942,38 +2035,63 @@ ${sample}
         return;
       }
 
-      // 死粉行：带勾选 + 取关按钮
-      const renderDeadUp = u => `
+      // 死粉行：带勾选 + 标星 + 取关 + 新动态红点
+      const lastSeenMap = storage.state.lastSeen || {};
+      const renderDeadUp = u => {
+        const hasNew = utils.hasNewDynamic(u, lastSeenMap);
+        const starred = !!u.starred;
+        return `
         <div class="bfm-up" data-mid="${u.mid}">
           <input type="checkbox" class="bfm-dead-cb" data-mid="${u.mid}" style="width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--bfm-primary)">
+          <button class="bfm-star-btn ${starred ? 'is-starred' : ''}" data-mid="${u.mid}" title="${starred ? '取消特别关注' : '标为特别关注'}">
+            ${starred ? '★' : '☆'}
+          </button>
           <img src="${utils.esc(u.face)}" loading="lazy">
-          <div class="bfm-up-name">${utils.esc(u.uname)}</div>
+          <div class="bfm-up-name">${utils.esc(u.uname)}${hasNew ? '<span class="bfm-new-dot" title="有新动态"></span>' : ''}</div>
           <span class="bfm-up-meta bfm-inactive">${utils.formatDays(utils.daysSince(u.lastActive))}</span>
           <button class="bfm-btn bfm-btn-ghost bfm-btn-icon bfm-unfollow-one" data-mid="${u.mid}" title="取关">取关</button>
           <a class="bfm-btn bfm-btn-ghost bfm-btn-icon" href="https://space.bilibili.com/${u.mid}" target="_blank" title="查看空间">↗</a>
         </div>
       `;
+      };
 
-      const renderUndetectedUp = u => `
+      const renderUndetectedUp = u => {
+        const hasNew = utils.hasNewDynamic(u, lastSeenMap);
+        return `
         <div class="bfm-up">
           <img src="${utils.esc(u.face)}" loading="lazy">
-          <div class="bfm-up-name">${utils.esc(u.uname)}</div>
+          <div class="bfm-up-name">${utils.esc(u.uname)}${hasNew ? '<span class="bfm-new-dot" title="有新动态"></span>' : ''}</div>
           <span class="bfm-up-meta">未检测</span>
           <a class="bfm-btn bfm-btn-ghost bfm-btn-icon" href="https://space.bilibili.com/${u.mid}" target="_blank" title="查看空间">↗</a>
         </div>
       `;
+      };
 
       let html = '';
       if (dead.length) {
+        // 区分：特别关注 vs 普通关注
+        const starred = dead.filter(u => u.starred);
+        const normal = dead.filter(u => !u.starred);
+        const starredCount = starred.length;
+        const normalCount = normal.length;
+        // "只看特别关注" toggle 状态：默认 false（看全部）
+        this._starredOnly = this._starredOnly || false;
+        const visibleDead = this._starredOnly ? starred : dead;
+
         html += `
           <div class="bfm-section-title">超过 ${threshold} 天未更新 (${dead.length})</div>
-          <div id="bfm-dead-toolbar" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;padding:8px 12px;background:var(--bfm-bg-alt);border-radius:var(--bfm-r-md)">
+          <div id="bfm-dead-toolbar" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;padding:8px 12px;background:var(--bfm-bg-alt);border-radius:var(--bfm-r-md);flex-wrap:wrap">
             <button class="bfm-btn" id="bfm-select-all">全选</button>
             <button class="bfm-btn" id="bfm-select-none">清空</button>
-            <span style="flex:1;color:var(--bfm-text-2);font-size:12px">已选 <b id="bfm-selected-count" style="color:var(--bfm-text)">0</b> / ${dead.length}</span>
-            <button class="bfm-btn bfm-btn-danger" id="bfm-batch-unfollow" disabled style="opacity:.5">一键取关</button>
+            <span style="flex:1;color:var(--bfm-text-2);font-size:12px">已选 <b id="bfm-selected-count" style="color:var(--bfm-text)">0</b> / ${visibleDead.length}</span>
+            <button class="bfm-btn ${this._starredOnly ? 'bfm-btn-primary' : ''}" id="bfm-starred-only" title="只看特别关注">
+              ⭐ ${starredCount}
+            </button>
+            <button class="bfm-btn bfm-btn-danger" id="bfm-batch-unfollow" disabled style="opacity:.5">取关</button>
           </div>
-          ${dead.map(renderDeadUp).join('')}
+          ${visibleDead.length === 0
+            ? `<div class="bfm-empty">${this._starredOnly ? '没有特别关注的死粉' : '没有死粉'}</div>`
+            : visibleDead.map(renderDeadUp).join('')}
         `;
       }
       if (undetected.length) {
@@ -1988,6 +2106,48 @@ ${sample}
           </button>
           ${undetected.slice(0, 50).map(renderUndetectedUp).join('')}
           ${undetected.length > 50 ? `<div class="bfm-empty" style="padding:8px">还有 ${undetected.length - 50} 个未显示</div>` : ''}
+        `;
+      }
+
+      // ===== 第三段：AI 推断的"可能误关注" =====
+      const aiOutliers = this._loadAiOutliers();
+      if (aiOutliers.length) {
+        const renderOutlier = o => {
+          // AI outliers 可能不在 storage.state.following 里（AI 推断但用户没关注过？）
+          // 但通常应该在 following 里。这里 fallback：构造最小对象
+          const u = storage.state.following[o.mid] || {
+            mid: o.mid,
+            uname: o.name,
+            face: '',
+            lastActive: 0,
+            dynamic_ts: 0,
+          };
+          const cat = this._classifyOutlier(o.name, u);
+          return `
+        <div class="bfm-up" data-mid="${u.mid}">
+          <input type="checkbox" class="bfm-outlier-cb" data-mid="${u.mid}" style="width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--bfm-primary)">
+          <button class="bfm-star-btn" data-mid="${u.mid}" title="标为特别关注">${u.starred ? '★' : '☆'}</button>
+          ${u.face ? `<img src="${utils.esc(u.face)}" loading="lazy">` : '<div style="width:32px;height:32px;flex-shrink:0"></div>'}
+          <div class="bfm-up-name">${utils.esc(u.uname)}</div>
+          <span class="bfm-tag-pill" style="background:${cat.color}">${cat.label}</span>
+          <button class="bfm-btn bfm-btn-ghost bfm-btn-icon bfm-outlier-unfollow-one" data-mid="${u.mid}" title="取关">取关</button>
+          <a class="bfm-btn bfm-btn-ghost bfm-btn-icon" href="https://space.bilibili.com/${u.mid}" target="_blank" title="查看空间">↗</a>
+        </div>
+          `;
+        };
+        html += `
+          <div class="bfm-section-title">可能误关注 (AI 推断) (${aiOutliers.length})${this._starredOnly ? '' : ''}</div>
+          <div class="bfm-modal-note" style="margin-bottom:8px">
+            AI 画像分析判定为不符合你兴趣的 UP 主（${Math.round((Date.now() - storage.state.aiOutliers.updatedAt) / 86400000)} 天前分析）。
+            <button class="bfm-btn bfm-btn-ghost" id="bfm-clear-outliers" style="padding:2px 8px;font-size:11px;margin-left:8px">清除</button>
+          </div>
+          <div id="bfm-outlier-toolbar" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;padding:8px 12px;background:var(--bfm-bg-alt);border-radius:var(--bfm-r-md)">
+            <button class="bfm-btn" id="bfm-outlier-all">全选</button>
+            <button class="bfm-btn" id="bfm-outlier-none">清空</button>
+            <span style="flex:1;color:var(--bfm-text-2);font-size:12px">已选 <b id="bfm-outlier-count">0</b></span>
+            <button class="bfm-btn bfm-btn-danger" id="bfm-outlier-batch-unfollow" disabled style="opacity:.5">取关</button>
+          </div>
+          ${aiOutliers.map(renderOutlier).join('')}
         `;
       }
       body.innerHTML = html;
@@ -2029,6 +2189,129 @@ ${sample}
             this.runBatchUnfollow([mid]);
           });
         });
+
+        // ⭐ 标星/取消标星
+        body.querySelectorAll('.bfm-star-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const mid = Number(btn.dataset.mid);
+            if (!storage.state.following[mid]) return;
+            const cur = !!storage.state.following[mid].starred;
+            storage.state.following[mid].starred = !cur;
+            storage.save();
+            // 立即更新 UI（不重渲染整个列表，避免丢失勾选状态）
+            btn.classList.toggle('is-starred', !cur);
+            btn.textContent = !cur ? '★' : '☆';
+            btn.title = !cur ? '取消特别关注' : '标为特别关注';
+            // 更新顶部 "⭐ N" 计数
+            this.render();
+          });
+        });
+
+        // "只看特别关注" 切换
+        const starredToggle = body.querySelector('#bfm-starred-only');
+        if (starredToggle) {
+          starredToggle.addEventListener('click', () => {
+            this._starredOnly = !this._starredOnly;
+            this.render();
+          });
+        }
+      }
+
+      // ===== AI outliers 段交互 =====
+      const outlierCbs = body.querySelectorAll('.bfm-outlier-cb');
+      if (outlierCbs.length) {
+        const countEl = body.querySelector('#bfm-outlier-count');
+        const batchBtn = body.querySelector('#bfm-outlier-batch-unfollow');
+        const updateOutlierCount = () => {
+          const n = body.querySelectorAll('.bfm-outlier-cb:checked').length;
+          if (countEl) countEl.textContent = n;
+          if (batchBtn) {
+            batchBtn.disabled = n === 0;
+            batchBtn.style.opacity = n === 0 ? '.5' : '1';
+          }
+        };
+        outlierCbs.forEach(cb => cb.addEventListener('change', updateOutlierCount));
+        const allBtn = body.querySelector('#bfm-outlier-all');
+        const noneBtn = body.querySelector('#bfm-outlier-none');
+        if (allBtn) allBtn.addEventListener('click', () => {
+          outlierCbs.forEach(cb => cb.checked = true);
+          updateOutlierCount();
+        });
+        if (noneBtn) noneBtn.addEventListener('click', () => {
+          outlierCbs.forEach(cb => cb.checked = false);
+          updateOutlierCount();
+        });
+        if (batchBtn) batchBtn.addEventListener('click', () => {
+          const mids = Array.from(body.querySelectorAll('.bfm-outlier-cb:checked'))
+            .map(cb => Number(cb.dataset.mid)).filter(Boolean);
+          this.runBatchUnfollow(mids);
+        });
+        body.querySelectorAll('.bfm-outlier-unfollow-one').forEach(btn => {
+          btn.addEventListener('click', () => {
+            this.runBatchUnfollow([Number(btn.dataset.mid)]);
+          });
+        });
+
+        // "清除"按钮：用户认为 AI 推断不准时
+        const clearBtn = body.querySelector('#bfm-clear-outliers');
+        if (clearBtn) clearBtn.addEventListener('click', () => {
+          if (confirm('清除 AI 推断列表？下次跑 AI 画像分析会重新生成。')) {
+            storage.state.aiOutliers = null;
+            storage.save();
+            this.render();
+          }
+        });
+
+        // AI outliers 行里也要支持 ⭐ 标星（用户看了发现"其实这个我关心"）
+        body.querySelectorAll('#bfm-outlier-toolbar ~ .bfm-up .bfm-star-btn, [class="bfm-section-title"]:not([class*="starred"]) ~ .bfm-up .bfm-star-btn')
+          .forEach(btn => {
+            btn.addEventListener('click', () => {
+              const mid = Number(btn.dataset.mid);
+              if (!storage.state.following[mid]) return;
+              const cur = !!storage.state.following[mid].starred;
+              storage.state.following[mid].starred = !cur;
+              storage.save();
+              btn.classList.toggle('is-starred', !cur);
+              btn.textContent = !cur ? '★' : '☆';
+              btn.title = !cur ? '取消特别关注' : '标为特别关注';
+            });
+          });
+      }
+
+      // 通用：点击 UP 名字 / 头像链接 → 记录 lastSeen（用于消除红点）
+      // 注意：取关按钮和 checkbox 不能算"看过"
+      body.querySelectorAll('.bfm-up a[href*="space.bilibili.com"]').forEach(a => {
+        a.addEventListener('click', () => {
+          const mid = Number(a.href.match(/space\.bilibili\.com\/(\d+)/)?.[1]);
+          if (!mid) return;
+          if (!storage.state.lastSeen) storage.state.lastSeen = {};
+          storage.state.lastSeen[mid] = Date.now();
+          storage.save();
+          // 立即移除红点（不必等下次 render）
+          const dot = a.closest('.bfm-up')?.querySelector('.bfm-new-dot');
+          if (dot) dot.remove();
+        });
+      });
+
+      // "全部已读"按钮（如果有红点的行）
+      if (body.querySelectorAll('.bfm-new-dot').length > 0) {
+        // 把这条工具条插到顶部（覆盖整个渲染的最前）
+        const markAllReadBtn = document.createElement('button');
+        markAllReadBtn.className = 'bfm-btn bfm-btn-ghost';
+        markAllReadBtn.style.cssText = 'width:100%;margin-bottom:8px';
+        markAllReadBtn.textContent = '✓ 全部标记为已读';
+        markAllReadBtn.addEventListener('click', () => {
+          const now = Date.now();
+          if (!storage.state.lastSeen) storage.state.lastSeen = {};
+          for (const u of [...dead, ...undetected]) {
+            if (utils.hasNewDynamic(u, storage.state.lastSeen)) {
+              storage.state.lastSeen[u.mid] = now;
+            }
+          }
+          storage.save();
+          this.render();
+        });
+        body.prepend(markAllReadBtn);
       }
     },
 
@@ -2547,6 +2830,22 @@ ${sample}
       try {
         const result = await llm.analyzeProfile(list);
         this.clearProgress?.();
+
+        // 持久化 outliers 到主面板（v0.10.0 新增）
+        if (result.outliers && result.outliers.length) {
+          const SEVEN_DAYS = 7 * 86400 * 1000;
+          storage.state.aiOutliers = {
+            items: result.outliers.map(o => {
+              if (typeof o === 'string') return { mid: null, name: o };
+              const mid = Number(o?.mid);
+              return { mid: Number.isFinite(mid) && mid > 0 ? mid : null, name: String(o?.name || '') };
+            }).filter(o => o.mid),
+            updatedAt: Date.now(),
+          };
+          storage.save();
+          utils.log(`[BFM] AI 推断 ${storage.state.aiOutliers.items.length} 位疑似误关注`);
+        }
+
         this._showProfileResult(result);
       } catch (e) {
         alert('分析失败：' + e.message);
