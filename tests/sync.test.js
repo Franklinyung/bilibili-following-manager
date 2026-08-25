@@ -28,9 +28,9 @@ test('.user.js 暴露 getUndetected 方法', () => {
   assert.match(content, /getUndetected\s*\(\s*\)\s*\{/, '应暴露 getUndetected 方法供 UI 调用');
 });
 
-test('.user.js @version 已升级到 v0.8.0', () => {
+test('.user.js @version 已升级到 v0.9.0', () => {
   const content = readFileSync(USER_JS, 'utf8');
-  assert.match(content, /@version\s+0\.8\.0/, '部署版本必须是 v0.8.0');
+  assert.match(content, /@version\s+0\.9\.0/, '部署版本必须是 v0.9.0');
 });
 
 test('.user.js 不应包含 @require CDN（v0.4.0 后已切内联 MD5）', () => {

@@ -2,11 +2,12 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.8.0
+// @version      0.9.0
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
 // @match        https://space.bilibili.com/*/fans/follow*
+// @match        https://space.bilibili.com/*/relation/follow*
 // @match        https://t.bilibili.com/*
 // @match        https://www.bilibili.com/*
 // @match        https://space.bilibili.com/*
@@ -2518,16 +2519,25 @@ ${sample}
       window.addEventListener('beforeunload', () => this._observer?.disconnect());
     },
 
+    // 选择器来源：B站关注数据分析插件（r007b34r）+ bilibili 批量取关（Nriver）
+    // 这些是真实工作脚本使用并验证过的类名
+    _containerSelector() {
+      return '.follow-list, .relation-list, .follow-item-container, .relation-list-container, .be-scrollbar, ul.list-list';
+    },
+    _listSelector() {
+      return '.follow-list .list-item, .relation-list .list-item, .follow-item, .bili-user-profile, [class*="user-card"], [class*="user-item"], ul.list-list li';
+    },
+
     _waitForList() {
       return new Promise((resolve) => {
         let attempts = 0;
         const check = () => {
-          const list = document.querySelector('.follow-list, .relation-list, ul.list-list');
-          if (list && list.children.length > 0) resolve();
+          const list = document.querySelector(this._containerSelector());
+          if (list) resolve();
           else if (++attempts < 30) setTimeout(check, 500);
           else {
             utils.warn('关注页选择器失效，请联系脚本作者更新');
-            resolve();  // 不阻塞脚本运行
+            resolve();
           }
         };
         check();
@@ -2536,8 +2546,7 @@ ${sample}
     },
 
     _observe() {
-      // 仅监听关注列表容器，不监听整个 body，降低开销
-      const target = document.querySelector('.follow-list, .relation-list, ul.list-list') || document.body;
+      const target = document.querySelector(this._containerSelector()) || document.body;
       this._observer = new MutationObserver(utils.debounce(() => this._enhanceCards(), 300));
       this._observer.observe(target, { childList: true, subtree: true });
     },
@@ -2553,7 +2562,7 @@ ${sample}
         <button id="bfm-batch-assign" style="background:#fb7299;color:#fff;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;display:none">将选中 (0) 加入分组</button>
         <button id="bfm-batch-remove" style="background:rgba(255,255,255,.2);color:#fff;border:1px solid #fff;padding:6px 12px;border-radius:4px;cursor:pointer;display:none">移出分组</button>
       `;
-      const target = document.querySelector('.follow-list, .relation-list, ul.list-list')?.parentElement;
+      const target = document.querySelector(this._containerSelector())?.parentElement;
       if (target) target.prepend(bar);
 
       bar.querySelector('#bfm-batch-toggle').addEventListener('click', () => {
@@ -2568,7 +2577,7 @@ ${sample}
     },
 
     _enhanceCards() {
-      const cards = document.querySelectorAll('.follow-list .list-item, .relation-list .list-item, ul.list-list li');
+      const cards = document.querySelectorAll(this._listSelector());
       cards.forEach(card => {
         if (card.dataset.bfmDone) return;
         card.dataset.bfmDone = '1';
@@ -2581,8 +2590,8 @@ ${sample}
         const mid = Number(m[1]);
 
         // 注入分组标签
-        const info = card.querySelector('.info, .fans-info, .list-item-info');
-        const name = card.querySelector('.fans-name, .list-item-name a, .list-item-name')?.textContent?.trim() || '';
+        const info = card.querySelector('.info, .fans-info, .list-item-info, .user-info');
+        const name = card.querySelector('.fans-name, .list-item-name, .list-item__name, .bili-user-profile__name, [class*="name"]')?.textContent?.trim() || '';
         const face = card.querySelector('img')?.src || '';
 
         if (info && !info.querySelector('.bfm-tags')) {
@@ -2791,7 +2800,7 @@ ${sample}
       ui.mount();
 
       const path = location.pathname;
-      if (path.includes('/fans/follow') || path.includes('/fans/fans')) {
+      if (path.includes('/fans/follow') || path.includes('/relation/follow')) {
         injectFollowPage.mount();
       } else if (location.host === 't.bilibili.com') {
         injectDynamicPage.mount();
