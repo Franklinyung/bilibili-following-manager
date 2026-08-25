@@ -28,12 +28,32 @@ test('.user.js 暴露 getUndetected 方法', () => {
   assert.match(content, /getUndetected\s*\(\s*\)\s*\{/, '应暴露 getUndetected 方法供 UI 调用');
 });
 
-test('.user.js @version 已升级到 v0.7.0', () => {
+test('.user.js @version 已升级到 v0.8.0', () => {
   const content = readFileSync(USER_JS, 'utf8');
-  assert.match(content, /@version\s+0\.7\.0/, '部署版本必须是 v0.7.0');
+  assert.match(content, /@version\s+0\.8\.0/, '部署版本必须是 v0.8.0');
 });
 
 test('.user.js 不应包含 @require CDN（v0.4.0 后已切内联 MD5）', () => {
   const content = readFileSync(USER_JS, 'utf8');
   assert.doesNotMatch(content, /@require\s+https?:/, '@require CDN 会触发脚本不激活');
+});
+
+test('.user.js 包含取关 API 调用', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  assert.match(content, /x\/relation\/modify/, '必须用 B 站官方取关接口');
+  assert.match(content, /act:\s*2/, '取关必须用 act=2');
+});
+
+test('.user.js 暴露 runBatchUnfollow UI 方法', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  assert.match(content, /runBatchUnfollow\s*\(\s*mids\s*\)/, 'UI 必须暴露批量取关方法');
+  assert.match(content, /api\.unfollow\(/, 'UI 必须调用 api.unfollow');
+});
+
+test('.user.js 取关有二次确认', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  // 必须有 modal 确认流程，不能直接取关
+  assert.match(content, /确认取关/);
+  assert.match(content, /data-act="cancel"/, '必须有取消按钮');
+  assert.match(content, /data-act="confirm"/, '必须有确认按钮');
 });

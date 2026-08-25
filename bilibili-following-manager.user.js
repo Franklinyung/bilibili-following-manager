@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.7.0
+// @version      0.8.0
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -572,6 +572,19 @@
           body: { tagid, fids: slice.join(','), csrf: utils.getBiliJct() },
         });
       }
+    },
+
+    /**
+     * 取关单个 UP 主
+     * B 站接口：POST /x/relation/modify
+     *   fid=目标mid  act=2  re_src=来源码  csrf=bili_jct
+     * act=1 关注，2 取关，5 拉黑
+     */
+    async unfollow(mid, reSrc = 11) {
+      return this.request(`${CONFIG.API_BASE}/x/relation/modify`, {
+        method: 'POST',
+        body: { fid: mid, act: 2, re_src: reSrc, csrf: utils.getBiliJct() },
+      });
     },
 
     // ---- 当前用户信息 ----
@@ -1926,14 +1939,24 @@ ${sample}
         return;
       }
 
-      const renderUp = u => `
+      // 死粉行：带勾选 + 取关按钮
+      const renderDeadUp = u => `
+        <div class="bfm-up" data-mid="${u.mid}">
+          <input type="checkbox" class="bfm-dead-cb" data-mid="${u.mid}" style="width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--bfm-primary)">
+          <img src="${utils.esc(u.face)}" loading="lazy">
+          <div class="bfm-up-name">${utils.esc(u.uname)}</div>
+          <span class="bfm-up-meta bfm-inactive">${utils.formatDays(utils.daysSince(u.lastActive))}</span>
+          <button class="bfm-btn bfm-btn-ghost bfm-btn-icon bfm-unfollow-one" data-mid="${u.mid}" title="取关">取关</button>
+          <a class="bfm-btn bfm-btn-ghost bfm-btn-icon" href="https://space.bilibili.com/${u.mid}" target="_blank" title="查看空间">↗</a>
+        </div>
+      `;
+
+      const renderUndetectedUp = u => `
         <div class="bfm-up">
           <img src="${utils.esc(u.face)}" loading="lazy">
           <div class="bfm-up-name">${utils.esc(u.uname)}</div>
-          <span class="bfm-up-meta">${u.lastActive
-            ? `<span class="bfm-up-meta bfm-inactive">${utils.formatDays(utils.daysSince(u.lastActive))}</span>`
-            : '<span class="bfm-up-meta">未检测</span>'}</span>
-          <a class="bfm-btn bfm-btn-ghost" href="https://space.bilibili.com/${u.mid}" target="_blank">查看</a>
+          <span class="bfm-up-meta">未检测</span>
+          <a class="bfm-btn bfm-btn-ghost bfm-btn-icon" href="https://space.bilibili.com/${u.mid}" target="_blank" title="查看空间">↗</a>
         </div>
       `;
 
@@ -1941,7 +1964,13 @@ ${sample}
       if (dead.length) {
         html += `
           <div class="bfm-section-title">超过 ${threshold} 天未更新 (${dead.length})</div>
-          ${dead.map(renderUp).join('')}
+          <div id="bfm-dead-toolbar" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;padding:8px 12px;background:var(--bfm-bg-alt);border-radius:var(--bfm-r-md)">
+            <button class="bfm-btn" id="bfm-select-all">全选</button>
+            <button class="bfm-btn" id="bfm-select-none">清空</button>
+            <span style="flex:1;color:var(--bfm-text-2);font-size:12px">已选 <b id="bfm-selected-count" style="color:var(--bfm-text)">0</b> / ${dead.length}</span>
+            <button class="bfm-btn bfm-btn-danger" id="bfm-batch-unfollow" disabled style="opacity:.5">一键取关</button>
+          </div>
+          ${dead.map(renderDeadUp).join('')}
         `;
       }
       if (undetected.length) {
@@ -1954,13 +1983,115 @@ ${sample}
           <button class="bfm-btn bfm-btn-primary" id="bfm-refresh-undetected" style="width:100%">
             一键刷新 ${undetected.length} 位 UP 主的活跃度
           </button>
-          ${undetected.slice(0, 50).map(renderUp).join('')}
+          ${undetected.slice(0, 50).map(renderUndetectedUp).join('')}
           ${undetected.length > 50 ? `<div class="bfm-empty" style="padding:8px">还有 ${undetected.length - 50} 个未显示</div>` : ''}
         `;
       }
       body.innerHTML = html;
-      const btn = body.querySelector('#bfm-refresh-undetected');
-      if (btn) btn.addEventListener('click', () => this.runInactiveRefresh());
+
+      const refreshBtn = body.querySelector('#bfm-refresh-undetected');
+      if (refreshBtn) refreshBtn.addEventListener('click', () => this.runInactiveRefresh());
+
+      // 死粉区交互
+      if (dead.length) {
+        const checkboxes = body.querySelectorAll('.bfm-dead-cb');
+        const countEl = body.querySelector('#bfm-selected-count');
+        const unfollowBtn = body.querySelector('#bfm-batch-unfollow');
+        const updateCount = () => {
+          const n = body.querySelectorAll('.bfm-dead-cb:checked').length;
+          countEl.textContent = n;
+          unfollowBtn.disabled = n === 0;
+          unfollowBtn.style.opacity = n === 0 ? '.5' : '1';
+        };
+        checkboxes.forEach(cb => cb.addEventListener('change', updateCount));
+
+        body.querySelector('#bfm-select-all').addEventListener('click', () => {
+          checkboxes.forEach(cb => cb.checked = true);
+          updateCount();
+        });
+        body.querySelector('#bfm-select-none').addEventListener('click', () => {
+          checkboxes.forEach(cb => cb.checked = false);
+          updateCount();
+        });
+        unfollowBtn.addEventListener('click', () => {
+          const mids = Array.from(body.querySelectorAll('.bfm-dead-cb:checked'))
+            .map(cb => Number(cb.dataset.mid));
+          this.runBatchUnfollow(mids);
+        });
+
+        // 单行取关按钮
+        body.querySelectorAll('.bfm-unfollow-one').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const mid = Number(btn.dataset.mid);
+            this.runBatchUnfollow([mid]);
+          });
+        });
+      }
+    },
+
+    /**
+     * 批量取关：先弹确认框 → 用户确认后逐个调用 api.unfollow → 完成后刷新
+     * @param {number[]} mids
+     */
+    async runBatchUnfollow(mids) {
+      if (!mids.length) return;
+      const items = mids
+        .map(mid => storage.state.following[mid])
+        .filter(Boolean);
+      if (!items.length) return;
+
+      // 确认对话框
+      const mask = document.createElement('div');
+      mask.className = 'bfm-modal-mask';
+      const preview = items.slice(0, 10)
+        .map(u => `<li>${utils.esc(u.uname)}</li>`).join('');
+      const more = items.length > 10 ? `<li style="color:var(--bfm-text-3)">…还有 ${items.length - 10} 位</li>` : '';
+      mask.innerHTML = `
+        <div class="bfm-modal" style="min-width:420px">
+          <h3>确认取关 ${items.length} 位 UP 主？</h3>
+          <div style="background:var(--bfm-bg-alt);border-radius:var(--bfm-r-sm);padding:10px 14px;margin:8px 0 4px;max-height:200px;overflow:auto">
+            <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--bfm-text-2)">
+              ${preview}${more}
+            </ul>
+          </div>
+          <div style="background:var(--bfm-accent-soft);color:var(--bfm-accent);padding:10px 12px;border-radius:var(--bfm-r-sm);font-size:12.5px;margin:8px 0">
+            ⚠ 取关后需要手动重新关注，此操作不可撤销
+          </div>
+          <div class="bfm-modal-actions">
+            <button class="bfm-btn" data-act="cancel">取消</button>
+            <button class="bfm-btn bfm-btn-danger" data-act="confirm">确认取关 ${items.length} 位</button>
+          </div>
+        </div>
+      `;
+      (this.shadow || document.body).appendChild(mask);
+      const close = () => mask.remove();
+
+      const confirmed = await new Promise(resolve => {
+        mask.querySelector('[data-act="cancel"]').addEventListener('click', () => { close(); resolve(false); });
+        mask.querySelector('[data-act="confirm"]').addEventListener('click', () => { close(); resolve(true); });
+      });
+      if (!confirmed) return;
+
+      // 执行批量取关
+      let ok = 0, fail = 0;
+      const total = items.length;
+      this.updateProgress?.(`批量取关 0/${total}`);
+      for (let i = 0; i < items.length; i++) {
+        try {
+          await api.unfollow(items[i].mid);
+          // 立即从本地存储移除（即使 API 失败也不影响显示）
+          delete storage.state.following[items[i].mid];
+          ok++;
+        } catch (e) {
+          utils.warn('unfollow failed', items[i].mid, e.message);
+          fail++;
+        }
+        this.updateProgress?.(`批量取关 ${i + 1}/${total}`);
+      }
+      storage.save();
+      this.clearProgress?.();
+      this.render();
+      alert(`完成：成功取关 ${ok} 位，失败 ${fail} 位${fail ? '\n\n失败原因可能是：\n• 风控（请 5 分钟后重试）\n• 登录态失效（请重新登录 B 站）' : ''}`);
     },
 
     renderSettings(body) {
