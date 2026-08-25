@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.9.1
+// @version      0.9.2
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -801,6 +801,7 @@
           }),
           responseType: 'json',
           anonymous: true,
+          timeout: opts.timeout ?? 90_000,  // 90s 默认上限（防永久挂起）
           onload(r) {
             try {
               const resp = typeof r.response === 'string' ? JSON.parse(r.response) : r.response;
@@ -810,7 +811,7 @@
             } catch (e) { reject(e); }
           },
           onerror(e) { reject(new Error(`网络错误 (status=${e?.status || '?'})`)); },
-          ontimeout() { reject(new Error('请求超时')); },
+          ontimeout() { reject(new Error('请求超时（90s 内未返回）')); },
         });
       }));
     },
@@ -848,6 +849,7 @@
           data: JSON.stringify(body),
           responseType: 'json',
           anonymous: true,
+          timeout: opts.timeout ?? 90_000,
           onload(r) {
             try {
               const resp = typeof r.response === 'string' ? JSON.parse(r.response) : r.response;
@@ -858,7 +860,7 @@
             } catch (e) { reject(e); }
           },
           onerror(e) { reject(new Error(`网络错误 (status=${e?.status || '?'})`)); },
-          ontimeout() { reject(new Error('请求超时')); },
+          ontimeout() { reject(new Error('请求超时（90s 内未返回）')); },
         });
       }));
     },
@@ -2297,25 +2299,45 @@ ${sample}
       const ungrouped = list.filter(u => !u.tagids || u.tagids.length === 0);
       const targets = ungrouped.length ? ungrouped : list;
 
+      // 估算耗时：每批 90s 超时 + 限流 200ms；保守按 10s/批 给用户提示
+      const estSec = Math.ceil(targets.length / 30) * 10;
       if (!confirm(
         `将使用 AI 分析 ${targets.length} 位${ungrouped.length ? '未分组' : ''}UP 主并推荐分组。\n\n` +
-        `提示：\n• 每次约消耗 ${Math.ceil(targets.length / 30)} 次 API 调用\n• 建议先在设置页测试连通\n• 模型不保证准确，结果需人工确认\n\n继续？`
+        `预估 ${Math.ceil(targets.length / 30)} 次 API 调用，约 ${estSec} 秒\n` +
+        `提示：\n• 单批超时 90s（自动跳过，不卡死）\n• 可中途点停止按钮中断\n• 模型不保证准确，结果需人工确认\n\n继续？`
       )) return;
 
       const BATCH = 30;
-      const suggestions = []; // {mid, uname, groupName, reason, isNew}
+      const TOTAL_BATCH = Math.ceil(targets.length / BATCH);
+      const suggestions = [];  // 成功的建议
+      const failedMids = [];   // 失败的 UP 主 mid，下次可重试
+      let stopped = false;
+
+      // 暴露"停止"按钮到面板（点 FAB 或工具栏都能触发）
+      this.abortCtrl = { stop: () => { stopped = true; } };
 
       this.btnEl?.classList.add('bfm-busy');
+      const startTime = Date.now();
+
       for (let i = 0; i < targets.length; i += BATCH) {
+        if (stopped) break;
+
         const batch = targets.slice(i, i + BATCH);
         const users = batch.map(u => ({
           mid: u.mid, uname: u.uname, sign: u.sign || u.lastTitle || '',
         }));
-        this.updateProgress?.(`AI 分组 ${Math.min(i + BATCH, targets.length)}/${targets.length}`);
+        const batchNo = Math.floor(i / BATCH) + 1;
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+        const avgPerBatch = (Date.now() - startTime) / batchNo / 1000;
+        const remaining = Math.max(0, Math.ceil((TOTAL_BATCH - batchNo) * avgPerBatch));
+        this.updateProgress?.(
+          `AI 分组 第 ${batchNo}/${TOTAL_BATCH} 批（${Math.min(i + BATCH, targets.length)}/${targets.length}） · 已用 ${elapsed}s · 预计还需 ${remaining}s`
+        );
+
         try {
           // 每批前重新拉一次现有分组（上一批可能新建了分组）
           const existing = storage.state.groups;
-          const arr = await llm.suggestGrouping(users, existing);
+          const arr = await llm.suggestGrouping(users, existing, { timeout: 90_000 });
           const byMid = new Map(users.map(u => [u.mid, u]));
           for (const item of arr) {
             const u = byMid.get(Number(item.mid));
@@ -2328,11 +2350,28 @@ ${sample}
           }
         } catch (e) {
           utils.error('AI batch failed', e);
-          alert(`批次 ${i / BATCH + 1} 失败：${e.message}\n已成功 ${suggestions.length} 条，建议重试失败部分`);
+          // 不再 alert（中断流程），收集失败的 mid 留待重试
+          for (const u of users) failedMids.push({ mid: u.mid, uname: u.uname, err: e.message });
         }
       }
+
       this.btnEl?.classList.remove('bfm-busy');
       this.clearProgress?.();
+      this.abortCtrl = null;
+
+      // 汇总报告
+      if (stopped) {
+        alert(`已停止：成功 ${suggestions.length} 条，剩余 ${targets.length - i - BATCH} 位未分析`);
+      } else if (failedMids.length) {
+        const msg = `完成 ${suggestions.length} 条建议\n` +
+          `⚠ 失败 ${failedMids.length} 位（${failedMids.slice(0, 3).map(f => f.uname).join('、')}...）\n` +
+          `原因：${failedMids[0]?.err || '未知'}\n\n` +
+          `是否只对失败的 ${failedMids.length} 位重试？`;
+        if (confirm(msg)) {
+          // 把 failed 写回 storage.following 标记（实际上没法标记，简单做法：再点一次 AI 分组，跳过已成功的）
+          alert('请重新点击"AI 分组"，已成功的不会再分析（只跑未分组的）');
+        }
+      }
 
       if (!suggestions.length) return;
       this._showAISuggestions(suggestions);

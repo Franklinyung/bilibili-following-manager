@@ -28,9 +28,9 @@ test('.user.js 暴露 getUndetected 方法', () => {
   assert.match(content, /getUndetected\s*\(\s*\)\s*\{/, '应暴露 getUndetected 方法供 UI 调用');
 });
 
-test('.user.js @version 已升级到 v0.9.1', () => {
+test('.user.js @version 已升级到 v0.9.2', () => {
   const content = readFileSync(USER_JS, 'utf8');
-  assert.match(content, /@version\s+0\.9\.1/, '部署版本必须是 v0.9.1');
+  assert.match(content, /@version\s+0\.9\.2/, '部署版本必须是 v0.9.2');
 });
 
 test('.user.js 不应包含 @require CDN（v0.4.0 后已切内联 MD5）', () => {
@@ -74,4 +74,44 @@ test('.user.js 疑似误关注列表支持批量取关', () => {
   assert.match(content, /bfm-outlier-unfollow/, '必须有 outliers 批量取关按钮');
   assert.match(content, /runBatchUnfollow\(mids\)/,
     'outliers 批量取关必须复用 runBatchUnfollow，不可另写一份');
+});
+
+test('.user.js LLM 请求必须有 timeout（防永久挂起）', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  // 抓 _chatOpenAI 函数体（要匹配函数定义而非调用点）
+  // 用非贪婪匹配第一个 "{...return...}" 块作为函数定义
+  const fnMatch = (name) => {
+    const re = new RegExp(`_${name}\\s*\\([^)]*\\)\\s*\\{`);
+    const m = content.match(re);
+    if (!m) return null;
+    // 从函数定义开始，找到第一个 ontimeout（通常就在最后）
+    const startIdx = m.index;
+    const rest = content.slice(startIdx);
+    const otIdx = rest.indexOf('ontimeout');
+    if (otIdx < 0) return null;
+    return rest.slice(0, otIdx + 50);
+  };
+  const openaiBlock = fnMatch('chatOpenAI');
+  const anthropicBlock = fnMatch('chatAnthropic');
+  assert.ok(openaiBlock, '_chatOpenAI 函数必须存在');
+  assert.ok(anthropicBlock, '_chatAnthropic 函数必须存在');
+  // 块内必须有 timeout: ... ?? <数字> 模式
+  assert.match(openaiBlock, /timeout:\s*[^,]*?\d+_?\d*/,
+    '_chatOpenAI 必须有 timeout 字段（带默认数字）');
+  assert.match(anthropicBlock, /timeout:\s*[^,]*?\d+_?\d*/,
+    '_chatAnthropic 必须有 timeout 字段');
+  // 默认值必须是 60s 或更长
+  const extractMs = block => {
+    const m = block.match(/timeout:[^,]*?(\d+_?\d*)/);
+    if (!m) return 0;
+    return Number(m[1].replace(/_/g, ''));
+  };
+  assert.ok(extractMs(openaiBlock) >= 60_000, `_chatOpenAI 默认 timeout ≥ 60s，实际 ${extractMs(openaiBlock)}`);
+  assert.ok(extractMs(anthropicBlock) >= 60_000, `_chatAnthropic 默认 timeout ≥ 60s，实际 ${extractMs(anthropicBlock)}`);
+});
+
+test('.user.js runAIGrouping 必须有 stopped / failedMids', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  assert.match(content, /stopped\s*=\s*true/, 'runAIGrouping 必须有 stopped 中断标志');
+  assert.match(content, /failedMids/, 'runAIGrouping 必须用 failedMids 收集失败');
 });
