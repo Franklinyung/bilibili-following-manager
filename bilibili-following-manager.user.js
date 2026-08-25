@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.9.2
+// @version      0.9.3
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -2297,24 +2297,82 @@ ${sample}
 
       // 默认只分析"未分组"的 UP 主
       const ungrouped = list.filter(u => !u.tagids || u.tagids.length === 0);
-      const targets = ungrouped.length ? ungrouped : list;
+      const fullTargets = ungrouped.length ? ungrouped : list;
 
-      // 估算耗时：每批 90s 超时 + 限流 200ms；保守按 10s/批 给用户提示
+      // ===== 断点续传检查 =====
+      let targets = fullTargets;
+      let resumed = false;
+      const ONE_DAY = 24 * 3600 * 1000;
+      const existingJob = storage.state.aiJob;
+      if (existingJob && existingJob.type === 'grouping'
+          && existingJob.pendingMids?.length
+          && Date.now() - (existingJob.lastUpdate || 0) < ONE_DAY) {
+        const age = Math.round((Date.now() - existingJob.lastUpdate) / 60000);
+        const resumeAns = confirm(
+          `检测到上次 AI 分组中断：\n` +
+          `• 已收集 ${(existingJob.collected || []).length} 条建议\n` +
+          `• 失败 ${(existingJob.failed || []).length} 位\n` +
+          `• 剩余 ${existingJob.pendingMids.length} 位待分析\n` +
+          `• 上次更新 ${age} 分钟前\n\n` +
+          `继续处理剩余的？\n（确定=继续 / 取消=从头开始）`
+        );
+        if (resumeAns) {
+          // 按 mid 还原 UP 主对象（可能被取关/重新同步）
+          const midSet = new Set(fullTargets.map(u => u.mid));
+          const midToUser = new Map(fullTargets.map(u => [u.mid, u]));
+          targets = existingJob.pendingMids
+            .map(m => midToUser.get(m))
+            .filter(Boolean);
+          // 只保留当前仍存在的 mid；不存在的从 checkpoint 删掉（已经取关）
+          const aliveMids = new Set(targets.map(u => u.mid));
+          if (existingJob.pendingMids.length !== targets.length) {
+            existingJob.pendingMids = [...aliveMids];
+            storage.save();
+          }
+          resumed = true;
+          utils.log(`[BFM] 断点续传：恢复 ${targets.length} 位待分析`);
+        } else {
+          delete storage.state.aiJob;
+          storage.save();
+        }
+      } else if (existingJob) {
+        // 超过 1 天的进度作废
+        delete storage.state.aiJob;
+        storage.save();
+      }
+
+      if (!targets.length) {
+        return alert('没有需要分析的 UP 主');
+      }
+
+      // 估算耗时（每批 10s 保守估计）
       const estSec = Math.ceil(targets.length / 30) * 10;
       if (!confirm(
-        `将使用 AI 分析 ${targets.length} 位${ungrouped.length ? '未分组' : ''}UP 主并推荐分组。\n\n` +
+        `将使用 AI 分析 ${targets.length} 位${ungrouped.length ? '未分组' : ''}UP 主并推荐分组${resumed ? '（续传）' : ''}。\n\n` +
         `预估 ${Math.ceil(targets.length / 30)} 次 API 调用，约 ${estSec} 秒\n` +
-        `提示：\n• 单批超时 90s（自动跳过，不卡死）\n• 可中途点停止按钮中断\n• 模型不保证准确，结果需人工确认\n\n继续？`
+        `提示：\n• 单批超时 90s（自动跳过）\n• 可中途点停止按钮中断\n• 中断后下次可继续（断点续传）\n• 模型不保证准确，结果需人工确认\n\n继续？`
       )) return;
 
       const BATCH = 30;
       const TOTAL_BATCH = Math.ceil(targets.length / BATCH);
-      const suggestions = [];  // 成功的建议
-      const failedMids = [];   // 失败的 UP 主 mid，下次可重试
+      const suggestions = resumed ? (existingJob.collected || []).slice() : [];
+      const failedMids = resumed ? (existingJob.failed || []).slice() : [];
       let stopped = false;
 
       // 暴露"停止"按钮到面板（点 FAB 或工具栏都能触发）
       this.abortCtrl = { stop: () => { stopped = true; } };
+
+      // 初始化/恢复 aiJob checkpoint
+      const aiJob = {
+        type: 'grouping',
+        startedAt: existingJob?.startedAt || Date.now(),
+        pendingMids: targets.map(u => u.mid),
+        collected: suggestions,
+        failed: failedMids,
+        lastUpdate: Date.now(),
+      };
+      storage.state.aiJob = aiJob;
+      storage.save();
 
       this.btnEl?.classList.add('bfm-busy');
       const startTime = Date.now();
@@ -2328,7 +2386,7 @@ ${sample}
         }));
         const batchNo = Math.floor(i / BATCH) + 1;
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-        const avgPerBatch = (Date.now() - startTime) / batchNo / 1000;
+        const avgPerBatch = batchNo > 1 ? (Date.now() - startTime) / batchNo / 1000 : 0;
         const remaining = Math.max(0, Math.ceil((TOTAL_BATCH - batchNo) * avgPerBatch));
         this.updateProgress?.(
           `AI 分组 第 ${batchNo}/${TOTAL_BATCH} 批（${Math.min(i + BATCH, targets.length)}/${targets.length}） · 已用 ${elapsed}s · 预计还需 ${remaining}s`
@@ -2353,6 +2411,13 @@ ${sample}
           // 不再 alert（中断流程），收集失败的 mid 留待重试
           for (const u of users) failedMids.push({ mid: u.mid, uname: u.uname, err: e.message });
         }
+
+        // 每批结束：checkpoint 到 storage（防断电/崩溃丢失进度）
+        aiJob.pendingMids = targets.slice(i + BATCH).map(u => u.mid);
+        aiJob.collected = suggestions;
+        aiJob.failed = failedMids;
+        aiJob.lastUpdate = Date.now();
+        try { storage.save(); } catch (e) { utils.warn('checkpoint save failed', e); }
       }
 
       this.btnEl?.classList.remove('bfm-busy');
@@ -2361,19 +2426,29 @@ ${sample}
 
       // 汇总报告
       if (stopped) {
-        alert(`已停止：成功 ${suggestions.length} 条，剩余 ${targets.length - i - BATCH} 位未分析`);
+        // 保留 aiJob，下次可继续
+        alert(
+          `已停止。\n` +
+          `已收集 ${suggestions.length} 条建议\n` +
+          `失败 ${failedMids.length} 位\n` +
+          `剩余 ${aiJob.pendingMids.length} 位待分析\n\n` +
+          `下次点击"AI 分组"可继续。`
+        );
       } else if (failedMids.length) {
-        const msg = `完成 ${suggestions.length} 条建议\n` +
+        // 失败的有 aiJob 记录，下次会先重试这批
+        alert(
+          `完成 ${suggestions.length} 条建议\n` +
           `⚠ 失败 ${failedMids.length} 位（${failedMids.slice(0, 3).map(f => f.uname).join('、')}...）\n` +
           `原因：${failedMids[0]?.err || '未知'}\n\n` +
-          `是否只对失败的 ${failedMids.length} 位重试？`;
-        if (confirm(msg)) {
-          // 把 failed 写回 storage.following 标记（实际上没法标记，简单做法：再点一次 AI 分组，跳过已成功的）
-          alert('请重新点击"AI 分组"，已成功的不会再分析（只跑未分组的）');
-        }
+          `已保存进度（已含失败列表）。下次点 AI 分组会自动重试失败批。`
+        );
       }
 
       if (!suggestions.length) return;
+
+      // 任务完成，清除 aiJob
+      delete storage.state.aiJob;
+      storage.save();
       this._showAISuggestions(suggestions);
     },
 
