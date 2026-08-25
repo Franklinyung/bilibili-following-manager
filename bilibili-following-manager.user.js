@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.10.0
+// @version      0.10.1
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -298,6 +298,93 @@
         };
         input.click();
       });
+    },
+
+    /**
+     * 创建无障碍模态对话框。
+     * 符合 WCAG 2.1：
+     *  - role="dialog" + aria-modal="true" + aria-labelledby
+     *  - 打开时焦点移到第一个可聚焦元素
+     *  - Tab/Shift+Tab 焦点循环在 modal 内
+     *  - Escape 关闭
+     *  - 关闭时焦点返回触发器
+     * @param {Object} opts
+     * @param {HTMLElement} opts.trigger - 触发器元素（用于返回焦点）
+     * @param {string} [opts.titleId] - modal 标题的 id（用于 aria-labelledby）
+     * @param {string} [opts.html] - modal 内容 HTML
+     * @param {boolean} [opts.alert] - 是否 alertdialog（更强烈的打断）
+     * @param {Function} [opts.onClose] - 关闭回调
+     * @returns {{mask: HTMLElement, modal: HTMLElement, close: Function}}
+     */
+    createAccessibleModal({ trigger, titleId, html, alert = false, onClose }) {
+      const mask = document.createElement('div');
+      mask.className = 'bfm-modal-mask';
+
+      const modal = document.createElement('div');
+      modal.className = 'bfm-modal';
+      modal.setAttribute('role', alert ? 'alertdialog' : 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      if (titleId) modal.setAttribute('aria-labelledby', titleId);
+      modal.setAttribute('tabindex', '-1');
+      modal.innerHTML = html;
+      mask.appendChild(modal);
+
+      // 让其他内容对屏幕阅读器"不可达"（背景 inert）
+      // 注意：脚本本身在 body 顶层，无法用 inert 锁定整页，但我们的 UI 是独立 Shadow DOM，
+      // 背景的 B 站页面用户应已被脚本的 FAB 接管焦点路径，影响有限。
+      mask.style.pointerEvents = 'auto';
+      (this.shadow || document.body).appendChild(mask);
+
+      const focusableSel = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+      const getFocusable = () => Array.from(modal.querySelectorAll(focusableSel));
+
+      // 初始焦点：移到 modal 容器或第一个可聚焦元素
+      requestAnimationFrame(() => {
+        const first = getFocusable()[0];
+        (first || modal).focus();
+      });
+
+      // 焦点循环 + Escape
+      const onKey = (e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          close();
+          return;
+        }
+        if (e.key !== 'Tab') return;
+        const els = getFocusable();
+        if (!els.length) {
+          e.preventDefault();
+          modal.focus();
+          return;
+        }
+        const first = els[0], last = els[els.length - 1];
+        const active = modal.querySelector(':focus') || document.activeElement;
+        if (e.shiftKey) {
+          if (active === first || !modal.contains(active)) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          if (active === last || !modal.contains(active)) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
+      };
+      mask.addEventListener('keydown', onKey);
+
+      const close = () => {
+        mask.removeEventListener('keydown', onKey);
+        mask.remove();
+        // 焦点返回触发器
+        if (trigger && typeof trigger.focus === 'function') {
+          try { trigger.focus(); } catch (_) { /* noop */ }
+        }
+        if (onClose) try { onClose(); } catch (e) { utils.error('modal onClose failed', e); }
+      };
+
+      return { mask, modal, close };
     },
 
     /**
@@ -1694,6 +1781,32 @@ ${sample}
         .bfm-hidden-by-group { display: none !important; }
         .bfm-check { position: absolute; top: 8px; left: 8px; width: 18px; height: 18px; cursor: pointer; z-index: 2; accent-color: var(--bfm-primary); }
 
+        /* ---------- a11y: focus visible ---------- */
+        /* 键盘焦点显示清晰环，鼠标点击不显示 */
+        :focus { outline: none; }
+        :focus-visible {
+          outline: 2px solid var(--bfm-primary);
+          outline-offset: 2px;
+          border-radius: 4px;
+        }
+        .bfm-btn:focus-visible {
+          outline-offset: 2px;
+        }
+        /* 关闭按钮需显著 */
+        .bfm-modal:focus-visible {
+          outline: none;
+        }
+
+        /* ---------- a11y: prefers-reduced-motion ---------- */
+        @media (prefers-reduced-motion: reduce) {
+          .bfm-fab, .bfm-panel, .bfm-modal, .bfm-modal-mask,
+          .bfm-new-dot, .bfm-star-btn, .bfm-btn {
+            animation: none !important;
+            transition: none !important;
+          }
+          .bfm-new-dot { animation: none !important; }
+        }
+
         /* Dark mode (system) */
         @media (prefers-color-scheme: dark) {
           :host {
@@ -1726,7 +1839,7 @@ ${sample}
       this.shadowHost.id = 'bfm-shadow-host';
       this.shadowHost.style.cssText = 'all:initial;display:contents;color-scheme:light dark';
       document.documentElement.appendChild(this.shadowHost);
-      this.shadow = this.shadowHost.attachShadow({ mode: 'open' });
+      this.shadow = this.shadowHost.attachShadow({ mode: 'open', delegatesFocus: true });
 
       // 样式注入到 shadow 内（FAB/面板/弹窗）
       const styleEl = document.createElement('style');
@@ -2326,15 +2439,19 @@ ${sample}
         .filter(Boolean);
       if (!items.length) return;
 
-      // 确认对话框
-      const mask = document.createElement('div');
-      mask.className = 'bfm-modal-mask';
+      const triggerEl = document.activeElement; // 用于关闭后焦点返回
+
+      // 用无障碍 helper 创建确认对话框（自动 ARIA + Escape + focus trap）
       const preview = items.slice(0, 10)
         .map(u => `<li>${utils.esc(u.uname)}</li>`).join('');
       const more = items.length > 10 ? `<li style="color:var(--bfm-text-3)">…还有 ${items.length - 10} 位</li>` : '';
-      mask.innerHTML = `
-        <div class="bfm-modal" style="min-width:420px">
-          <h3>确认取关 ${items.length} 位 UP 主？</h3>
+      const titleId = `bfm-confirm-${Date.now()}`;
+      const { close } = utils.createAccessibleModal({
+        trigger: triggerEl,
+        titleId,
+        alert: true,
+        html: `
+          <h3 id="${titleId}">确认取关 ${items.length} 位 UP 主？</h3>
           <div style="background:var(--bfm-bg-alt);border-radius:var(--bfm-r-sm);padding:10px 14px;margin:8px 0 4px;max-height:200px;overflow:auto">
             <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--bfm-text-2)">
               ${preview}${more}
@@ -2347,10 +2464,9 @@ ${sample}
             <button class="bfm-btn" data-act="cancel">取消</button>
             <button class="bfm-btn bfm-btn-danger" data-act="confirm">确认取关 ${items.length} 位</button>
           </div>
-        </div>
-      `;
-      (this.shadow || document.body).appendChild(mask);
-      const close = () => mask.remove();
+        `,
+      });
+      const mask = document.querySelector('.bfm-modal-mask:last-child');
 
       const confirmed = await new Promise(resolve => {
         mask.querySelector('[data-act="cancel"]').addEventListener('click', () => { close(); resolve(false); });

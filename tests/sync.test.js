@@ -28,9 +28,9 @@ test('.user.js 暴露 getUndetected 方法', () => {
   assert.match(content, /getUndetected\s*\(\s*\)\s*\{/, '应暴露 getUndetected 方法供 UI 调用');
 });
 
-test('.user.js @version 已升级到 v0.10.0', () => {
+test('.user.js @version 已升级到 v0.10.1', () => {
   const content = readFileSync(USER_JS, 'utf8');
-  assert.match(content, /@version\s+0\.10\.0/, '部署版本必须是 v0.10.0');
+  assert.match(content, /@version\s+0\.10\.1/, '部署版本必须是 v0.10.1');
 });
 
 test('.user.js 不应包含 @require CDN（v0.4.0 后已切内联 MD5）', () => {
@@ -114,4 +114,23 @@ test('.user.js runAIGrouping 必须有 stopped / failedMids', () => {
   const content = readFileSync(USER_JS, 'utf8');
   assert.match(content, /stopped\s*=\s*true/, 'runAIGrouping 必须有 stopped 中断标志');
   assert.match(content, /failedMids/, 'runAIGrouping 必须用 failedMids 收集失败');
+});
+// ===== v0.10.1: a11y + JSDOM =====
+
+
+// ===== v0.10.1: a11y + JSDOM =====
+
+test('.user.js 包含 a11y helper createAccessibleModal', () => {
+  const c = readFileSync(USER_JS, 'utf8');
+  assert.match(c, /createAccessibleModal/, '必须有 helper 函数');
+  assert.match(c, /setAttribute\(['"]role['"],\s*alert\s*\?\s*['"]/, 'role 通过三元设置 alertdialog/dialog');
+  assert.match(c, /setAttribute\(['"]aria-modal['"],\s*['"]true['"]/, 'aria-modal="true"');
+  assert.match(c, /setAttribute\(['"]aria-labelledby['"]/, 'aria-labelledby');
+  assert.match(c, /e\.key\s*===\s*['"]Escape['"]/, 'Escape 关闭');
+  assert.match(c, /delegatesFocus:\s*true/, 'Shadow DOM delegatesFocus');
+  assert.match(c, /prefers-reduced-motion:\s*reduce/, 'prefers-reduced-motion 支持');
+  assert.match(c, /:focus-visible/, ':focus-visible 焦点环');
+  assert.ok(
+    /['"]alertdialog['"]/.test(c) && /['"]dialog['"]/.test(c),
+    '必须同时包含 alertdialog 和 dialog 字符串字面量');
 });
