@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.10.1
+// @version      0.10.2
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -314,9 +314,10 @@
      * @param {string} [opts.html] - modal 内容 HTML
      * @param {boolean} [opts.alert] - 是否 alertdialog（更强烈的打断）
      * @param {Function} [opts.onClose] - 关闭回调
+     * @param {HTMLElement} [opts.container] - 挂载容器；不传则自动用 #bfm-shadow-host 的 shadow root
      * @returns {{mask: HTMLElement, modal: HTMLElement, close: Function}}
      */
-    createAccessibleModal({ trigger, titleId, html, alert = false, onClose }) {
+    createAccessibleModal({ trigger, titleId, html, alert = false, onClose, container }) {
       const mask = document.createElement('div');
       mask.className = 'bfm-modal-mask';
 
@@ -333,7 +334,16 @@
       // 注意：脚本本身在 body 顶层，无法用 inert 锁定整页，但我们的 UI 是独立 Shadow DOM，
       // 背景的 B 站页面用户应已被脚本的 FAB 接管焦点路径，影响有限。
       mask.style.pointerEvents = 'auto';
-      (this.shadow || document.body).appendChild(mask);
+      // 挂载容器自动定位：caller 传入 → #bfm-shadow-host 的 shadow root → document.body
+      // ⚠️ 不能用 this.shadow：helper 是 utils 上的方法，this 指的是 utils（不是 UI 控制器）。
+      // 之前 (this.shadow || document.body) 永远走 fallback，modal 被挂到 body（light DOM），
+      // shadow 内的 CSS 选择器 .bfm-modal-mask / .bfm-modal 不生效 → 用户看到无框内容
+      let target = container;
+      if (!target) {
+        const host = document.getElementById('bfm-shadow-host');
+        target = host?.shadowRoot || document.body;
+      }
+      target.appendChild(mask);
 
       const focusableSel = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
       const getFocusable = () => Array.from(modal.querySelectorAll(focusableSel));
@@ -2446,7 +2456,8 @@ ${sample}
         .map(u => `<li>${utils.esc(u.uname)}</li>`).join('');
       const more = items.length > 10 ? `<li style="color:var(--bfm-text-3)">…还有 ${items.length - 10} 位</li>` : '';
       const titleId = `bfm-confirm-${Date.now()}`;
-      const { close } = utils.createAccessibleModal({
+      const { close, mask } = utils.createAccessibleModal({
+        container: this.shadow,           // 显式挂到 shadow root（CSS 才会生效）
         trigger: triggerEl,
         titleId,
         alert: true,
@@ -2466,7 +2477,6 @@ ${sample}
           </div>
         `,
       });
-      const mask = document.querySelector('.bfm-modal-mask:last-child');
 
       const confirmed = await new Promise(resolve => {
         mask.querySelector('[data-act="cancel"]').addEventListener('click', () => { close(); resolve(false); });
