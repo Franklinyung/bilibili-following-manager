@@ -1,6 +1,6 @@
 {
   "name": "bilibili-following-manager",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "B 站关注管理油猴脚本：批量分组、动态页分组筛选、死粉识别、AI 智能分类",
   "private": true,
   "type": "module",

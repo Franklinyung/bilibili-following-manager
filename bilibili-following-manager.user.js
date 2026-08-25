@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.10.2
+// @version      0.10.3
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -1028,11 +1028,52 @@ ${userList}
         { role: 'user', content: prompt },
       ], { temperature: 0.2 });
 
-      // 提取 JSON（容忍模型偶尔包 ```json```）
-      const match = content.match(/\[[\s\S]*\]/);
-      if (!match) throw new Error('模型未返回有效 JSON');
-      const arr = JSON.parse(match[0]);
+      // v0.10.3：解析失败时重试一次（让模型重新格式化）— 大幅降低"模型偶尔不输出 JSON"的失败率
+      let arr;
+      try {
+        arr = this._parseJsonArray(content);
+      } catch (e) {
+        utils.warn('AI 分组 JSON 解析失败，重试一次', e.message);
+        const retry = await this.chat([
+          { role: 'system', content: '你只输出合法 JSON 数组，不要任何解释、markdown 代码块或多余文字。' },
+          { role: 'user', content: prompt + '\n\n[提醒] 上一次输出无法解析。请严格按 JSON 数组格式输出，不要 ``` 包裹，不要写任何额外文字。' },
+        ], { temperature: 0.0 });
+        arr = this._parseJsonArray(retry);  // 二次失败直接抛出，让外层收集到 failedMids
+      }
       return arr.filter(x => x.mid && x.group);
+    },
+
+    /**
+     * 容错 JSON 数组解析（v0.10.3）
+     * 容忍：markdown 代码块包裹、尾部逗号、首尾多余文字、空白字符
+     * 失败抛错，由 suggestGrouping 决定是否重试
+     */
+    _parseJsonArray(content) {
+      if (!content || typeof content !== 'string') {
+        throw new Error('模型返回为空');
+      }
+      let s = content.trim();
+      // 1. 剥 markdown 代码块（```json ... ``` 或 ``` ... ```）
+      const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fence) s = fence[1].trim();
+      // 2. 找首个 [ 到末尾 ]（容忍模型在前面/后面写了别的文字）
+      const bracketStart = s.indexOf('[');
+      const bracketEnd = s.lastIndexOf(']');
+      if (bracketStart === -1 || bracketEnd === -1 || bracketEnd < bracketStart) {
+        throw new Error('模型未返回 JSON 数组（找不到 [...]）');
+      }
+      s = s.slice(bracketStart, bracketEnd + 1);
+      // 3. 修 trailing comma (",]" 或 ",}")
+      s = s.replace(/,(\s*[}\]])/g, '$1');
+      // 4. parse
+      let arr;
+      try {
+        arr = JSON.parse(s);
+      } catch (e) {
+        throw new Error(`JSON 解析失败：${e.message}`);
+      }
+      if (!Array.isArray(arr)) throw new Error('模型返回不是数组');
+      return arr;
     },
 
     // ---- 场景 2: 画像分析 ----
@@ -2904,6 +2945,10 @@ ${sample}
     async _applyAISuggestions(items) {
       if (!items.length) return alert('未选择任何项');
 
+      // v0.10.3：规范化 groupName（去空格）— 避免"技术" vs " 技术 " 被判为不同
+      const normalize = (s) => String(s || '').replace(/\s+/g, '').trim();
+      for (const item of items) item.groupName = normalize(item.groupName);
+
       // 1. 按 groupName 分组
       const byGroup = new Map(); // groupName -> [mids]
       for (const item of items) {
@@ -2911,23 +2956,50 @@ ${sample}
         byGroup.get(item.groupName).push(item.mid);
       }
 
-      // 2. 创建不存在的新分组
-      const existingNames = new Set(storage.state.groups.map(g => g.name));
+      // 2. 创建不存在的新分组（v0.10.3：记录每个分组的成败，不再 silently warn 后让用户看不到）
+      const existingNames = new Set(storage.state.groups.map(g => normalize(g.name)));
       const toCreate = Array.from(byGroup.keys()).filter(n => !existingNames.has(n));
+      const createResults = [];
       this.updateProgress?.(`创建 ${toCreate.length} 个新分组...`);
       for (const name of toCreate) {
-        try { await api.createGroup(name); }
-        catch (e) { utils.warn('create group failed', name, e); }
+        try {
+          await api.createGroup(name);
+          createResults.push({ name, ok: true });
+        } catch (e) {
+          // 单个失败不 throw（阻断其他分组），但要记录，汇总时报告
+          createResults.push({ name, ok: false, err: e.message });
+          utils.warn('create group failed', name, e.message);
+        }
       }
-      if (toCreate.length) {
-        storage.state.groups = await api.listGroups();
+      // 即使有失败也刷新缓存（成功的那部分要可见）
+      if (createResults.length) {
+        try {
+          storage.state.groups = await api.listGroups();
+        } catch (e) {
+          utils.warn('listGroups failed after create', e.message);
+        }
       }
 
-      // 3. 批量加入分组
+      // 3. 批量加入分组（v0.10.3：精确 → 模糊 → 失败明细 三级降级）
+      const failedMatches = [];   // 模型 groupName 找不到对应 B站分组
+      const failedAdds = [];      // 加入分组 API 失败
       let applied = 0;
       for (const [name, mids] of byGroup) {
-        const g = storage.state.groups.find(g => g.name === name);
-        if (!g) continue;
+        // 3a. 精确匹配（normalize 后）
+        let g = storage.state.groups.find(g => normalize(g.name) === name);
+        // 3b. 模糊匹配：双向 includes（应对模型返回 "技术" 而 B站叫"技术开发" 的情况）
+        if (!g) {
+          g = storage.state.groups.find(g => {
+            const a = normalize(g.name), b = name;
+            return a && b && (a.includes(b) || b.includes(a));
+          });
+          if (g) utils.warn(`模糊匹配：模型建议"${name}" → 匹配到"${g.name}"`);
+        }
+        if (!g) {
+          failedMatches.push({ name, midCount: mids.length });
+          this.updateProgress?.(`分组匹配失败：${name} (${mids.length}人)`);
+          continue;
+        }
         try {
           await api.addUsersToGroup(g.tagid, mids);
           for (const mid of mids) {
@@ -2937,13 +3009,30 @@ ${sample}
             storage.state.following[mid].tagids = Array.from(set);
           }
           applied += mids.length;
-        } catch (e) { utils.warn('add users failed', name, e); }
+        } catch (e) {
+          utils.warn('add users failed', name, e.message);
+          failedAdds.push({ name, midCount: mids.length, err: e.message });
+        }
         this.updateProgress?.(`应用中 ${applied}/${items.length}`);
       }
       storage.save();
       this.clearProgress?.();
       this.render();
-      alert(`完成：成功分组 ${applied} 位 UP 主`);
+
+      // 4. 分类报告（v0.10.3：让用户知道到底哪步出问题）
+      const lines = [`完成：成功分组 ${applied} 位 UP 主`];
+      const failedCreates = createResults.filter(r => !r.ok);
+      if (failedCreates.length) {
+        lines.push(`\n⚠ 分组创建失败 ${failedCreates.length} 个：${failedCreates.slice(0, 3).map(f => `"${f.name}"`).join('、')}${failedCreates.length > 3 ? '...' : ''}`);
+      }
+      if (failedMatches.length) {
+        lines.push(`\n⚠ 分组名找不到匹配 ${failedMatches.length} 个：${failedMatches.slice(0, 3).map(f => `"${f.name}"(${f.midCount}人)`).join('、')}${failedMatches.length > 3 ? '...' : ''}`);
+        lines.push(`提示：可以手动建同名分组后再次应用`);
+      }
+      if (failedAdds.length) {
+        lines.push(`\n⚠ 加入分组失败 ${failedAdds.length} 个：${failedAdds.slice(0, 3).map(f => `"${f.name}"(${f.err})`).join('、')}`);
+      }
+      alert(lines.join(''));
     },
 
     async runAIProfile() {

@@ -67,3 +67,76 @@ test('预估时间应在确认对话框里告诉用户', () => {
   assert.match(USER_JS, /预估[^\\]*秒/,
     '用户点 AI 分组前应知道大致耗时');
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// v0.10.3 修复：
+//   1. JSON 解析容错（_parseJsonArray：剥 markdown / 修 trailing comma / 找括号）
+//   2. JSON 解析失败时重试一次
+//   3. _applyAISuggestions：createGroup 失败要记录、find 失败要降级为 includes、
+//      报告分类（成功 / 创建失败 / 匹配失败 / 加入失败）
+// ──────────────────────────────────────────────────────────────────────────
+
+test('v0.10.3: 有 _parseJsonArray 容错 helper', () => {
+  assert.match(USER_JS, /_parseJsonArray\s*\(\s*content\s*\)/,
+    '必须实现 _parseJsonArray(content) 容错解析');
+});
+
+test('v0.10.3: _parseJsonArray 必须处理 markdown 代码块', () => {
+  const block = USER_JS.match(/_parseJsonArray\s*\(\s*content\s*\)\s*\{[\s\S]*?\n\s{4}\}/);
+  assert.ok(block, '_parseJsonArray 函数必须存在');
+  assert.match(block[0], /```/,
+    '必须识别 markdown 代码块包裹（```）');
+  assert.match(block[0], /bracketStart|lastIndexOf|indexOf/,
+    '必须用方括号定位提取 JSON 数组');
+});
+
+test('v0.10.3: _parseJsonArray 必须处理 trailing comma', () => {
+  const block = USER_JS.match(/_parseJsonArray\s*\(\s*content\s*\)\s*\{[\s\S]*?\n\s{4}\}/);
+  assert.match(block[0], /trailing\s*comma|,(\s*\[}\]\])/,
+    '必须移除 trailing comma 容忍 JSON 格式错误');
+});
+
+test('v0.10.3: suggestGrouping 解析失败时必须重试一次', () => {
+  const block = USER_JS.match(/async\s+suggestGrouping\s*\([^)]*\)\s*\{[\s\S]*?\n\s{4}\}/);
+  assert.ok(block, 'suggestGrouping 函数必须存在');
+  // 重试模式：在 try/catch 后再次 await this.chat(...)
+  assert.match(block[0], /_parseJsonArray/,
+    'suggestGrouping 必须用 _parseJsonArray 解析');
+  // 第二次 chat 调用（重试）
+  const chatCalls = block[0].match(/this\.chat\s*\(/g) || [];
+  assert.ok(chatCalls.length >= 2,
+    `suggestGrouping 至少调用 chat 两次（首次 + 重试），实际 ${chatCalls.length} 次`);
+});
+
+test('v0.10.3: _applyAISuggestions 必须跟踪 createGroup 失败', () => {
+  const block = USER_JS.match(/async\s+_applyAISuggestions\s*\([^)]*\)\s*\{[\s\S]*?\n\s{4}\}/);
+  assert.ok(block, '_applyAISuggestions 函数必须存在');
+  assert.match(block[0], /createResults/,
+    '必须用 createResults 数组记录每个分组的成败');
+  assert.match(block[0], /failedMatches/,
+    '必须用 failedMatches 数组记录分组名匹配失败的');
+  assert.match(block[0], /failedAdds/,
+    '必须用 failedAdds 数组记录加入分组 API 失败的');
+});
+
+test('v0.10.3: _applyAISuggestions 必须有降级匹配（精确 → includes）', () => {
+  const block = USER_JS.match(/async\s+_applyAISuggestions\s*\([^)]*\)\s*\{[\s\S]*?\n\s{4}\}/);
+  assert.match(block[0], /\.includes\s*\(|\.includes/,
+    'find 失败时必须降级为 includes 模糊匹配');
+});
+
+test('v0.10.3: _applyAISuggestions 完成时必须报告分类明细', () => {
+  const block = USER_JS.match(/async\s+_applyAISuggestions\s*\([^)]*\)\s*\{[\s\S]*?\n\s{4}\}/);
+  // 报告必须包含三类失败中至少两类的提示
+  assert.match(block[0], /分组创建失败|分组名找不到匹配|加入分组失败/,
+    '汇总 alert 必须分类提示失败原因');
+});
+
+test('v0.10.3: _applyAISuggestions 不再 silently warn（必须收集到结果数组）', () => {
+  // 历史 bug：createGroup 失败只 utils.warn，用户看不到 → "应用后 0 个成功"
+  // 修复后必须 push 到 createResults 数组
+  const block = USER_JS.match(/async\s+_applyAISuggestions\s*\([^)]*\)\s*\{[\s\S]*?\n\s{4}\}/);
+  // createGroup 调用前后必须有 push 到 createResults 的逻辑
+  assert.match(block[0], /createResults\.push/,
+    'createGroup 调用后必须 push 到 createResults，不能只 warn');
+});
