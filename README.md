@@ -3,7 +3,7 @@
 > 一个油猴脚本，让你的关注列表井井有条——批量分组、动态页分组筛选、死粉识别、AI 智能分类、断点续传。
 
 **GitHub**：https://github.com/Franklinyung/bilibili-following-manager
-**当前版本**：v0.10.5 · **测试**：149 / 149 通过 · 9 / 9 smoke 通过
+**当前版本**：v0.10.5 · **测试**：151 / 151 通过 · 9 / 9 smoke 通过
 
 ---
 

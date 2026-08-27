@@ -452,10 +452,11 @@
 
     // ===== 风控日历：衰减滑窗热度评分（v0.10.5） =====
     // 错误码解析：-101 = 未登录，'API -352:' / 'API -412:' 是风控码，其他 → 'other'
+    // 注意：正则已捕获负号，直接返回 m[1]，不要再加 '-'
     parseApiCode(e) {
       if (e?.message === 'NOT_LOGGED_IN') return '-101';
       const m = e?.message?.match(/API (-?\d+):/);
-      return m ? `-${m[1]}` : 'other';
+      return m ? m[1] : 'other';
     },
 
     windLoad() {
@@ -465,6 +466,8 @@
 
     windRecord(op, count, result, durationMs) {
       const data = this.windLoad() || { version: 1, records: [] };
+      // 防御：存储损坏（records 非数组）时不要污染写操作路径
+      if (!Array.isArray(data.records)) data.records = [];
       data.records.push({ ts: Date.now(), op, count, result, durationMs });
       if (data.records.length > 200) data.records = data.records.slice(-200);
       if (result === '-352' || result === '-412') data.lastRiskAt = Date.now();
@@ -495,13 +498,15 @@
       return { heat: Math.round(heat), level, totals24h: totals, lastRiskAgeMin };
     },
 
-    // 写操作前调用：返回应额外 sleep 的毫秒数（0 = 不减速）
-    windGuard() {
+    // 写操作前调用：按风控等级自适应 sleep，返回实际 sleep 的毫秒数（0 = 不减速）
+    async windGuard() {
       const { level } = this.windStatus();
-      if (level === 'green') return 0;
-      if (level === 'yellow') return 1500;
-      if (level === 'orange') return 3000;
-      return 5 * 60_000;
+      const ms = level === 'green' ? 0
+        : level === 'yellow' ? 1500
+        : level === 'orange' ? 3000
+        : 5 * 60_000;
+      if (ms > 0) await this._sleep(ms);
+      return ms;
     },
   };
 

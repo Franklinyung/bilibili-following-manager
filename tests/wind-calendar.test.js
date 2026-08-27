@@ -30,7 +30,11 @@ function loadUtils(store) {
     window: dom.window,
     location: dom.window.location,
     console,
-    setTimeout, clearTimeout, setInterval, clearInterval,
+    // setTimeout 立即触发：否则 windGuard(red) 测试会真睡 5 分钟
+    setTimeout: (fn) => { fn(); return 0; },
+    clearTimeout: () => {},
+    setInterval: () => 0,
+    clearInterval: () => {},
     Promise,
     Date, // 让测试可改 ctx.Date.now
     GM_getValue: (k, def) => (k in store ? store[k] : def),
@@ -140,7 +144,7 @@ test('windStatus: -352 比同 count 的 ok 热度高 2.5×', () => {
   assert.ok(ratio >= 2.4 && ratio <= 2.6, `ratio 应≈2.5，实际 ${ratio}`);
 });
 
-test('windGuard: red 级别返回 300000ms（5min）', () => {
+test('windGuard: red 级别返回 300000ms（5min）且真的 sleep 了', async () => {
   const store = freshStore();
   const { utils: u } = loadUtils(store);
   // 注入 90 条 0s 前 -352 unfollow，heat ≈ 1.0 × 2.5 × exp(0) × 90 = 225 → red
@@ -149,5 +153,20 @@ test('windGuard: red 级别返回 300000ms（5min）', () => {
     d.records.push({ ts: Date.now(), op: 'unfollow', count: 1, result: '-352', durationMs: 0 });
   }
   store.bfm_wind_calendar_v1 = JSON.stringify(d);
-  assert.equal(u.windGuard(), 300000);
+  // windGuard 是 async：返回值必须 await 拿到（回归：曾是同步 number，await 无效不减速）
+  assert.equal(await u.windGuard(), 300000);
+});
+
+test('windGuard: green 级别立即返回 0 不 sleep', async () => {
+  const { utils: u } = loadUtils(freshStore());
+  assert.equal(await u.windGuard(), 0);
+});
+
+test('parseApiCode: API -352 → -352（正则会自带负号，不可再加）', () => {
+  const { utils: u } = loadUtils(freshStore());
+  assert.equal(u.parseApiCode(new Error('API -352: risk')), '-352');
+  assert.equal(u.parseApiCode(new Error('API -412: too fast')), '-412');
+  assert.equal(u.parseApiCode(new Error('NOT_LOGGED_IN')), '-101');
+  assert.equal(u.parseApiCode(new Error('network error')), 'other');
+  assert.equal(u.parseApiCode(null), 'other');
 });
