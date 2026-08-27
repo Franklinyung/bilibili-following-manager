@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.10.4
+// @version      0.10.5
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -449,7 +449,66 @@
       // LLM 配置不导入（安全考虑，让用户重新填）
       return safe;
     },
+
+    // ===== 风控日历：衰减滑窗热度评分（v0.10.5） =====
+    // 错误码解析：-101 = 未登录，'API -352:' / 'API -412:' 是风控码，其他 → 'other'
+    parseApiCode(e) {
+      if (e?.message === 'NOT_LOGGED_IN') return '-101';
+      const m = e?.message?.match(/API (-?\d+):/);
+      return m ? `-${m[1]}` : 'other';
+    },
+
+    windLoad() {
+      try { return JSON.parse(GM_getValue('bfm_wind_calendar_v1', 'null')); }
+      catch { return null; }
+    },
+
+    windRecord(op, count, result, durationMs) {
+      const data = this.windLoad() || { version: 1, records: [] };
+      data.records.push({ ts: Date.now(), op, count, result, durationMs });
+      if (data.records.length > 200) data.records = data.records.slice(-200);
+      if (result === '-352' || result === '-412') data.lastRiskAt = Date.now();
+      GM_setValue('bfm_wind_calendar_v1', JSON.stringify(data));
+    },
+
+    windStatus() {
+      const data = this.windLoad();
+      if (!data) return { heat: 0, level: 'green', totals24h: {}, lastRiskAgeMin: null };
+      const TAU = 7200;
+      let heat = 0;
+      const totals = { unfollow: 0, writeOps: 0 };
+      for (const r of data.records) {
+        const dt = (Date.now() - r.ts) / 1000;
+        if (dt > 86400) continue;
+        const w = { unfollow: 1.0, 'tags/addUsers': 0.6, createGroup: 0.4,
+                    'tags/delUsers': 0.4 }[r.op] ?? 0.5;
+        const f = { ok: 1.0, '-352': 2.5, '-412': 2.0, '-101': 0 }[r.result] ?? 1.0;
+        heat += w * f * Math.exp(-dt / TAU) * r.count;
+        if (dt <= 86400) {
+          totals.writeOps += r.count;
+          if (r.op === 'unfollow') totals.unfollow += r.count;
+        }
+      }
+      const level = heat < 30 ? 'green' : heat < 60 ? 'yellow' : heat < 80 ? 'orange' : 'red';
+      const lastRiskAgeMin = data.lastRiskAt
+        ? Math.round((Date.now() - data.lastRiskAt) / 60000) : null;
+      return { heat: Math.round(heat), level, totals24h: totals, lastRiskAgeMin };
+    },
+
+    // 写操作前调用：返回应额外 sleep 的毫秒数（0 = 不减速）
+    windGuard() {
+      const { level } = this.windStatus();
+      if (level === 'green') return 0;
+      if (level === 'yellow') return 1500;
+      if (level === 'orange') return 3000;
+      return 5 * 60_000;
+    },
   };
+
+  // 测试 hook：仅 Node 环境挂载（浏览器中 process 不存在，自然跳过）
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+    globalThis.__bfm_utils = utils;
+  }
 
   // ============================================================
   // 2. 持久化存储 (storage)
@@ -666,10 +725,18 @@
     },
 
     async createGroup(name) {
-      return this.request(`${CONFIG.API_BASE}/x/relation/tag/add`, {
-        method: 'POST',
-        body: { name, csrf: utils.getBiliJct() },
-      });
+      const start = Date.now();
+      try {
+        const data = await this.request(`${CONFIG.API_BASE}/x/relation/tag/add`, {
+          method: 'POST',
+          body: { name, csrf: utils.getBiliJct() },
+        });
+        utils.windRecord('createGroup', 1, 'ok', Date.now() - start);
+        return data;
+      } catch (e) {
+        utils.windRecord('createGroup', 1, utils.parseApiCode(e), Date.now() - start);
+        throw e;
+      }
     },
 
     async updateGroup(tagid, name) {
@@ -690,12 +757,22 @@
       if (!mids.length) return;
       // 单次最多 25 个（v0.10.4 从 50 降半：大 fids 串更容易触发 -352 风控）
       // 块间强制间隔 600ms：写操作比读操作更容易被风控盯上
+      // v0.10.5：块前后 windGuard（基于风控评分自适应减速）+ 块内 try/catch 埋点
       for (let i = 0; i < mids.length; i += 25) {
         const slice = mids.slice(i, i + 25);
-        await this.request(`${CONFIG.API_BASE}/x/relation/tags/addUsers`, {
-          method: 'POST',
-          body: { tagid, fids: slice.join(','), csrf: utils.getBiliJct() },
-        });
+        await utils.windGuard();
+        const start = Date.now();
+        try {
+          await this.request(`${CONFIG.API_BASE}/x/relation/tags/addUsers`, {
+            method: 'POST',
+            body: { tagid, fids: slice.join(','), csrf: utils.getBiliJct() },
+          });
+          utils.windRecord('tags/addUsers', slice.length, 'ok', Date.now() - start);
+        } catch (e) {
+          utils.windRecord('tags/addUsers', slice.length, utils.parseApiCode(e), Date.now() - start);
+          throw e;
+        }
+        await utils.windGuard();
         if (i + 25 < mids.length) await utils._sleep(600);
       }
     },
@@ -720,10 +797,18 @@
      * act=1 关注，2 取关，5 拉黑
      */
     async unfollow(mid, reSrc = 11) {
-      return this.request(`${CONFIG.API_BASE}/x/relation/modify`, {
-        method: 'POST',
-        body: { fid: mid, act: 2, re_src: reSrc, csrf: utils.getBiliJct() },
-      });
+      const start = Date.now();
+      try {
+        const data = await this.request(`${CONFIG.API_BASE}/x/relation/modify`, {
+          method: 'POST',
+          body: { fid: mid, act: 2, re_src: reSrc, csrf: utils.getBiliJct() },
+        });
+        utils.windRecord('unfollow', 1, 'ok', Date.now() - start);
+        return data;
+      } catch (e) {
+        utils.windRecord('unfollow', 1, utils.parseApiCode(e), Date.now() - start);
+        throw e;
+      }
     },
 
     // ---- 当前用户信息 ----
@@ -2549,6 +2634,8 @@ ${sample}
       const total = items.length;
       this.updateProgress?.(`批量取关 0/${total}`);
       for (let i = 0; i < items.length; i++) {
+        // v0.10.5：每条 windGuard（api.unfollow 已埋点；这里避免双计只做自适应 sleep）
+        await utils.windGuard();
         try {
           await api.unfollow(items[i].mid);
           // 立即从本地存储移除（即使 API 失败也不影响显示）
@@ -2569,7 +2656,37 @@ ${sample}
     renderSettings(body) {
       const s = storage.state.settings;
       const lc = llm.getConfig();
+      // v0.10.5：风控日历状态（先算 status，red 时模板顶部塞 warning 条）
+      const ws = utils.windStatus();
+      const wColor = { green: '#10b981', yellow: '#f59e0b', orange: '#f97316', red: '#ef4444' }[ws.level];
+      const wEmoji = { green: '🟢', yellow: '🟡', orange: '🟠', red: '🔴' }[ws.level];
+      const wLabel = { green: '健康', yellow: '轻度风险', orange: '高度风险', red: '极限' }[ws.level];
+      const wTime = ws.lastRiskAgeMin == null
+        ? '（从未触发）'
+        : ws.lastRiskAgeMin < 60
+          ? `${ws.lastRiskAgeMin} 分钟前${ws.lastRiskAgeMin >= 30 ? '（恢复中）' : '（已恢复）'}`
+          : `${Math.round(ws.lastRiskAgeMin / 60)} 小时前（已恢复）`;
+      const redWarning = ws.level === 'red'
+        ? '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:10px 14px;margin:0 0 16px;color:#92400e;font-size:13px">'
+          + '⚠ 账号写操作热度过高（' + ws.heat + '/100），建议 1 小时后再继续。</div>'
+        : '';
+      const wRecent = (utils.windLoad()?.records || [])
+        .slice().sort((a, b) => b.ts - a.ts).slice(0, 10);
+      const opLabelMap = { unfollow: '取关', 'tags/addUsers': '写分组', createGroup: '创建分组', 'tags/delUsers': '移除分组' };
+      const resultColorMap = { ok: '#10b981', '-352': '#ef4444', '-412': '#f97316', '-101': '#888' };
+      const recordsHtml = wRecent.length
+        ? '<ul style="margin:6px 0 0;padding-left:18px;font-size:12px;color:var(--bfm-text-2)">'
+          + wRecent.map(r => {
+            const t = new Date(r.ts);
+            const tStr = (t.getMonth() + 1) + '/' + t.getDate() + ' ' + String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+            const opL = opLabelMap[r.op] || r.op;
+            const rc = resultColorMap[r.result] || '#888';
+            return '<li>' + tStr + ' · ' + opL + ' ×' + r.count + ' · <span style="color:' + rc + '">' + r.result + '</span></li>';
+          }).join('')
+          + '</ul>'
+        : '<div style="font-size:12px;color:var(--bfm-text-3);margin-top:4px">暂无记录</div>';
       body.innerHTML = `
+        ${redWarning}
         <div class="bfm-section-title">基础设置</div>
         <div style="margin: 12px 0">
           <label>死粉阈值（天）：</label>
@@ -2613,6 +2730,17 @@ ${sample}
           <button class="bfm-btn bfm-btn-primary" id="bfm-llm-save">保存配置</button>
           <button class="bfm-btn" id="bfm-llm-test">测试连通</button>
           <button class="bfm-btn" id="bfm-llm-profile">AI 画像分析</button>
+        </div>
+
+        <div class="bfm-section-title" style="margin-top:24px">账号写操作健康度</div>
+        <div style="background:var(--bfm-bg-alt);border:1px solid var(--bfm-border);border-radius:6px;padding:12px 14px;font-size:13px;color:var(--bfm-text-2)">
+          <div><span style="color:${wColor};font-weight:600">${wEmoji} ${wLabel}（热度 ${ws.heat}/100）</span></div>
+          <div style="margin-top:6px;color:var(--bfm-text-3);font-size:12px">24h 内：取关 ${ws.totals24h.unfollow || 0} · 写操作 ${ws.totals24h.writeOps || 0}</div>
+          <div style="margin-top:4px;color:var(--bfm-text-3);font-size:12px">上次 -352/-412：${wTime}</div>
+          <details style="margin-top:8px">
+            <summary style="cursor:pointer;color:var(--bfm-text);font-size:12px;user-select:none">查看最近 ${wRecent.length} 条记录 ▾</summary>
+            ${recordsHtml}
+          </details>
         </div>
 
         <div style="margin-top:24px;color:#888;font-size:12px">

@@ -28,9 +28,9 @@ test('.user.js 暴露 getUndetected 方法', () => {
   assert.match(content, /getUndetected\s*\(\s*\)\s*\{/, '应暴露 getUndetected 方法供 UI 调用');
 });
 
-test('.user.js @version 已升级到 v0.10.4', () => {
+test('.user.js @version 已升级到 v0.10.5', () => {
   const content = readFileSync(USER_JS, 'utf8');
-  assert.match(content, /@version\s+0\.10\.4/, '部署版本必须是 v0.10.4');
+  assert.match(content, /@version\s+0\.10\.5/, '部署版本必须是 v0.10.5');
 });
 
 test('.user.js 不应包含 @require CDN（v0.4.0 后已切内联 MD5）', () => {
@@ -114,6 +114,24 @@ test('.user.js runAIGrouping 必须有 stopped / failedMids', () => {
   const content = readFileSync(USER_JS, 'utf8');
   assert.match(content, /stopped\s*=\s*true/, 'runAIGrouping 必须有 stopped 中断标志');
   assert.match(content, /failedMids/, 'runAIGrouping 必须用 failedMids 收集失败');
+});
+
+// ===== v0.10.5: 风控日历埋点护栏 =====
+
+test('.user.js 4 个写操作点都埋了 windRecord / windGuard', () => {
+  const c = readFileSync(USER_JS, 'utf8');
+  // 1) api.unfollow 内部 windRecord（单条 + 批量共用）
+  assert.match(c, /async unfollow\([^)]*\)\s*\{[\s\S]*?windRecord\(/,
+    'api.unfollow 必须有 windRecord 埋点');
+  // 2) api.createGroup 内部 windRecord
+  assert.match(c, /async createGroup\([^)]*\)\s*\{[\s\S]*?windRecord\(['"]createGroup['"]/,
+    'api.createGroup 必须 windRecord createGroup');
+  // 3) api.addUsersToGroup 块前后 windGuard + 块内 windRecord
+  assert.match(c, /async addUsersToGroup\([^)]*\)\s*\{[\s\S]*?windGuard\(\)[\s\S]*?windRecord\(['"]tags\/addUsers['"]/,
+    'api.addUsersToGroup 必须 windGuard + windRecord tags/addUsers');
+  // 4) runBatchUnfollow 函数体内 windGuard（不调 windRecord，避免与 api.unfollow 双计）
+  assert.match(c, /async runBatchUnfollow\([^)]*\)\s*\{[\s\S]*?await utils\.windGuard\(\)/,
+    'runBatchUnfollow 函数体内必须 windGuard');
 });
 // ===== v0.10.1: a11y + JSDOM =====
 
