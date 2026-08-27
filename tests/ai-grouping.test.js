@@ -140,3 +140,53 @@ test('v0.10.3: _applyAISuggestions 不再 silently warn（必须收集到结果�
   assert.match(block[0], /createResults\.push/,
     'createGroup 调用后必须 push 到 createResults，不能只 warn');
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// v0.10.4：风控退避 + 写操作节流 + 分组准确率（prompt v2）
+// 背景：用户批量取关后账号进入风控期，addUsersToGroup 一批 50 个 mid + 200ms
+// 间隔必然连续 -352 失败；同时模型批 30 个时漏人/乱建新组。
+// ──────────────────────────────────────────────────────────────────────────
+
+test('v0.10.4: 风控码 -352/-412 必须用长退避（不是普通 500ms）', () => {
+  const block = USER_JS.match(/request\(url,\s*opts = \{\}\)\s*\{[\s\S]*?\n    \},/);
+  assert.ok(block, 'api.request 函数必须存在');
+  assert.match(block[0], /-352|-412/, '必须识别风控错误码');
+  assert.match(block[0], /isRisk|5000/, '风控退避至少 5s 起步');
+});
+
+test('v0.10.4: addUsersToGroup 单块 ≤25 个 mid 且块间有间隔', () => {
+  const block = USER_JS.match(/addUsersToGroup\(tagid,\s*mids\)\s*\{[\s\S]*?\n    \},/);
+  assert.ok(block, 'addUsersToGroup 必须存在');
+  assert.match(block[0], /i \+= 25/, '单块从 50 降到 25');
+  assert.match(block[0], /_sleep\(600\)/, '块间必须有 600ms 间隔');
+});
+
+test('v0.10.4: removeUsersFromGroup 同样降块 + 块间间隔', () => {
+  const block = USER_JS.match(/removeUsersFromGroup\(tagid,\s*mids\)\s*\{[\s\S]*?\n    \},/);
+  assert.match(block[0], /i \+= 25/, '单块 25');
+  assert.match(block[0], /_sleep\(600\)/, '块间 600ms');
+});
+
+test('v0.10.4: _applyAISuggestions 跨分组写之间要有呼吸间隔', () => {
+  const block = USER_JS.match(/async\s+_applyAISuggestions\s*\([^)]*\)\s*\{[\s\S]*?\n\s{4}\}/);
+  assert.match(block[0], /_sleep\(300\)/, '跨分组之间必须 _sleep(300)');
+});
+
+test('v0.10.4: AI 分组批次降到 20', () => {
+  const block = USER_JS.match(/runAIGrouping[\s\S]*?const BATCH = (\d+)/);
+  assert.equal(Number(block?.[1]), 20, 'BATCH 必须 = 20（30 个太大，漏人严重）');
+});
+
+test('v0.10.4: prompt 硬性要求复用已有分组并限制新组数', () => {
+  const block = USER_JS.match(/async suggestGrouping\([\s\S]*?\n    \},/);
+  assert.ok(block, 'suggestGrouping 必须存在');
+  assert.match(block[0], /必须复用|原样照抄/, '必须硬性要求复用已有组名');
+  assert.match(block[0], /新分组总数不要超过|不超过 ?3 ?个/, '必须限制新组数量');
+  assert.match(block[0], /已有 \$\{|已有 .*人/, '分组清单要带人数（大组优先复用）');
+  assert.match(block[0], /count/, '要读取分组的 count 字段排序');
+});
+
+test('v0.10.4: suggestGrouping 把 opts.timeout 传给 chat', () => {
+  const block = USER_JS.match(/async suggestGrouping\([\s\S]*?\n    \},/);
+  assert.match(block[0], /opts\.timeout/, '调用方传入的 timeout 不能被忽略');
+});

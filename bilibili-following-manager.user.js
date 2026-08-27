@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.10.3
+// @version      0.10.4
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -585,8 +585,14 @@
             return resp.data;
           } catch (e) {
             if (e.message === 'NOT_LOGGED_IN' || attempt === retry) throw e;
+            // v0.10.4：风控码（-352 拦截 / -412 请求过快）用更长的退避，
+            // 普通 API 错误维持原有短退避
+            const isRisk = /-352|-412/.test(e.message);
+            const backoff = isRisk
+              ? 5000 * Math.pow(2, attempt - 1)
+              : 500 * Math.pow(2, attempt - 1);
             utils.warn(`retry ${attempt}/${retry} for ${url}`, e.message);
-            await utils._sleep(500 * Math.pow(2, attempt - 1));
+            await utils._sleep(backoff);
           }
         }
       });
@@ -682,24 +688,28 @@
 
     async addUsersToGroup(tagid, mids) {
       if (!mids.length) return;
-      // 单次最多 50 个
-      for (let i = 0; i < mids.length; i += 50) {
-        const slice = mids.slice(i, i + 50);
+      // 单次最多 25 个（v0.10.4 从 50 降半：大 fids 串更容易触发 -352 风控）
+      // 块间强制间隔 600ms：写操作比读操作更容易被风控盯上
+      for (let i = 0; i < mids.length; i += 25) {
+        const slice = mids.slice(i, i + 25);
         await this.request(`${CONFIG.API_BASE}/x/relation/tags/addUsers`, {
           method: 'POST',
           body: { tagid, fids: slice.join(','), csrf: utils.getBiliJct() },
         });
+        if (i + 25 < mids.length) await utils._sleep(600);
       }
     },
 
     async removeUsersFromGroup(tagid, mids) {
       if (!mids.length) return;
-      for (let i = 0; i < mids.length; i += 50) {
-        const slice = mids.slice(i, i + 50);
+      // 同上：v0.10.4 块 50→25，块间 +600ms
+      for (let i = 0; i < mids.length; i += 25) {
+        const slice = mids.slice(i, i + 25);
         await this.request(`${CONFIG.API_BASE}/x/relation/tags/delUsers`, {
           method: 'POST',
           body: { tagid, fids: slice.join(','), csrf: utils.getBiliJct() },
         });
+        if (i + 25 < mids.length) await utils._sleep(600);
       }
     },
 
@@ -1000,33 +1010,42 @@
      * @param {Array<{tagid,name}>} existingGroups 已有分组（模型优先复用）
      * @returns {Promise<Array<{mid, groupName, reason}>>}
      */
-    async suggestGrouping(users, existingGroups = []) {
+    async suggestGrouping(users, existingGroups = [], opts = {}) {
       const userList = users.map(u =>
         `- mid=${u.mid} | ${u.uname} | 签名:${u.sign || '无'} | 最近:${u.lastTitle || '无'}`
       ).join('\n');
 
+      // v0.10.4：带人数的分组清单 — 模型更倾向复用大组，而不是为每个人建新组
       const groupsHint = existingGroups.length
-        ? `\n已有分组（请优先复用，不要随意创建新分组）：\n${existingGroups.map(g => `- ${g.name}`).join('\n')}\n`
+        ? `\n已有分组（按人数排序。请优先把 UP 主归入这些组，名字必须原样照抄）：\n${existingGroups
+            .slice()
+            .sort((a, b) => (b.count || 0) - (a.count || 0))
+            .map(g => `- ${g.name}${g.count ? `（已有 ${g.count} 人）` : ''}`)
+            .join('\n')}\n`
         : '';
 
-      const prompt = `你是 B 站关注管理助手。根据以下 UP 主的信息，为每个 UP 主推荐一个分组名称。
+      // v0.10.4 重写 prompt：严格约束复用、限制新组数量、给出B站常见分类示例
+      const prompt = `你是 B 站关注列表整理助手。下面是 ${users.length} 位 UP 主的名字/签名/最近视频标题。
 
-要求：
-1. 优先复用已有分组${existingGroups.length ? `（如：${existingGroups.slice(0, 5).map(g => g.name).join('、')}）` : ''}
-2. 如确实需要新分组，给出简洁的中文名（2-6 字）
-3. 每个 UP 主给一句话简要理由
-4. 严格按 JSON 数组格式输出，不要任何额外文字${groupsHint}
+任务：给每位 UP 主推荐一个分组。
+
+硬性要求：
+1. 只要某个已有分组说得通，就必须复用它（名字一字不差）。新分组总数不要超过 3 个。
+2. 新分组必须是 2-6 字的宽泛中文类别（如：知识科普 / 影视剪辑 / 生活记录 / 游戏 / 音乐 / 美食），禁止为人名或单一主题建组。
+3. 拿不准就归入最接近的宽泛类别，不要用"其他/杂项"兜底超过 2 人。
+4. 每人一句 ≤15 字理由。
+5. 只输出 JSON 数组，无任何其他文字。${groupsHint}
 
 UP 主列表：
 ${userList}
 
-输出格式（严格 JSON，不要 markdown 代码块）：
-[{"mid":123,"group":"技术","reason":"分享编程教程"},{"mid":456,"group":"娱乐","reason":"游戏实况"}]`;
+输出格式：
+[{"mid":123,"group":"技术","reason":"编程教程"},{"mid":456,"group":"娱乐","reason":"游戏实况"}]`;
 
       const content = await this.chat([
         { role: 'system', content: '你只输出 JSON，不要任何解释性文字。' },
         { role: 'user', content: prompt },
-      ], { temperature: 0.2 });
+      ], { temperature: 0.2, timeout: opts.timeout });
 
       // v0.10.3：解析失败时重试一次（让模型重新格式化）— 大幅降低"模型偶尔不输出 JSON"的失败率
       let arr;
@@ -1037,7 +1056,7 @@ ${userList}
         const retry = await this.chat([
           { role: 'system', content: '你只输出合法 JSON 数组，不要任何解释、markdown 代码块或多余文字。' },
           { role: 'user', content: prompt + '\n\n[提醒] 上一次输出无法解析。请严格按 JSON 数组格式输出，不要 ``` 包裹，不要写任何额外文字。' },
-        ], { temperature: 0.0 });
+        ], { temperature: 0.0, timeout: opts.timeout });
         arr = this._parseJsonArray(retry);  // 二次失败直接抛出，让外层收集到 failedMids
       }
       return arr.filter(x => x.mid && x.group);
@@ -2803,7 +2822,9 @@ ${sample}
         `提示：\n• 单批超时 90s（自动跳过）\n• 可中途点停止按钮中断\n• 中断后下次可继续（断点续传）\n• 模型不保证准确，结果需人工确认\n\n继续？`
       )) return;
 
-      const BATCH = 30;
+      // v0.10.4：BATCH 30→20。批越大模型越容易漏人/串人，准确率明显下降；
+      // 批次变多后靠已有的断点续传保证可恢复。
+      const BATCH = 20;
       const TOTAL_BATCH = Math.ceil(targets.length / BATCH);
       const suggestions = resumed ? (existingJob.collected || []).slice() : [];
       const failedMids = resumed ? (existingJob.failed || []).slice() : [];
@@ -3014,6 +3035,8 @@ ${sample}
           failedAdds.push({ name, midCount: mids.length, err: e.message });
         }
         this.updateProgress?.(`应用中 ${applied}/${items.length}`);
+        // v0.10.4：跨分组写操作之间加 300ms 呼吸间隔（连续高频写极易触发 -352）
+        await utils._sleep(300);
       }
       storage.save();
       this.clearProgress?.();
