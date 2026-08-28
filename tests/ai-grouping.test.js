@@ -154,22 +154,33 @@ test('v0.10.4: 风控码 -352/-412 必须用长退避（不是普通 500ms）', 
   assert.match(block[0], /isRisk|5000/, '风控退避至少 5s 起步');
 });
 
-test('v0.10.4: addUsersToGroup 单块 ≤25 个 mid 且块间有间隔', () => {
-  const block = USER_JS.match(/addUsersToGroup\(tagid,\s*mids\)\s*\{[\s\S]*?\n    \},/);
+test('v0.10.6: addUsersToGroup 块 10 + 风控等级 + 随机抖动', () => {
+  const block = USER_JS.match(/addUsersToGroup\(tagid,\s*mids(?:,\s*opts[^)]*)?\)\s*\{[\s\S]*?\n    \},/);
   assert.ok(block, 'addUsersToGroup 必须存在');
-  assert.match(block[0], /i \+= 25/, '单块从 50 降到 25');
-  assert.match(block[0], /_sleep\(600\)/, '块间必须有 600ms 间隔');
+  assert.match(block[0], /i \+= SIZE/, '块大小应走常量 SIZE（v0.10.6 = 10）');
+  assert.match(block[0], /CONFIG\.WRITE_BATCH_SIZE/, '块大小从 CONFIG 读取');
+  assert.match(block[0], /windGuard\(\)/, '每块前必须 windGuard');
+  assert.match(block[0], /WRITE_JITTER_(GREEN|YELLOW|ORANGE)/,
+    '必须用随机抖动替代固定 sleep');
+  assert.doesNotMatch(block[0], /_sleep\(600\)/, 'v0.10.6 不再使用固定 600ms');
 });
 
-test('v0.10.4: removeUsersFromGroup 同样降块 + 块间间隔', () => {
-  const block = USER_JS.match(/removeUsersFromGroup\(tagid,\s*mids\)\s*\{[\s\S]*?\n    \},/);
-  assert.match(block[0], /i \+= 25/, '单块 25');
-  assert.match(block[0], /_sleep\(600\)/, '块间 600ms');
+test('v0.10.6: removeUsersFromGroup 块 10 + 风控等级 + 随机抖动', () => {
+  const block = USER_JS.match(/removeUsersFromGroup\(tagid,\s*mids(?:,\s*opts[^)]*)?\)\s*\{[\s\S]*?\n    \},/);
+  assert.ok(block, 'removeUsersFromGroup 必须存在');
+  assert.match(block[0], /i \+= SIZE/, '块大小应走常量 SIZE（v0.10.6 = 10）');
+  assert.match(block[0], /CONFIG\.WRITE_BATCH_SIZE/, '块大小从 CONFIG 读取');
+  assert.match(block[0], /windGuard\(\)/, '每块前必须 windGuard');
+  assert.match(block[0], /WRITE_JITTER_(GREEN|YELLOW|ORANGE)/,
+    '必须用随机抖动替代固定 sleep');
+  assert.doesNotMatch(block[0], /_sleep\(600\)/, 'v0.10.6 不再使用固定 600ms');
 });
 
-test('v0.10.4: _applyAISuggestions 跨分组写之间要有呼吸间隔', () => {
+test('v0.10.6: _applyAISuggestions 跨分组写之间要有随机呼吸间隔', () => {
   const block = USER_JS.match(/async\s+_applyAISuggestions\s*\([^)]*\)\s*\{[\s\S]*?\n\s{4}\}/);
-  assert.match(block[0], /_sleep\(300\)/, '跨分组之间必须 _sleep(300)');
+  assert.match(block[0], /Math\.random\(\)/, '跨分组之间必须使用随机间隔（不再固定 300ms）');
+  assert.match(block[0], /1500\s*\+\s*Math\.floor/, '基础间隔 1.5s + 随机抖动');
+  assert.doesNotMatch(block[0], /_sleep\(300\)/, 'v0.10.6 不再使用固定 300ms');
 });
 
 test('v0.10.4: AI 分组批次降到 20', () => {

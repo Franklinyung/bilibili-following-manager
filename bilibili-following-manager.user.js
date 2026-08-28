@@ -2,7 +2,7 @@
 // @name         Bilibili 关注管理 (Following Manager)
 // @name:zh-CN   B 站关注管理助手
 // @namespace    https://github.com/Franklinyung/bilibili-following-manager
-// @version      0.10.5
+// @version      0.10.6
 // @description  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @description:zh-CN  批量分组、动态页分组筛选、死粉识别，让你的关注列表井井有条
 // @author       Franklinyung
@@ -57,9 +57,18 @@
     RATE_LIMIT_MS: 200,           // 单请求最小间隔
     INACTIVE_DAYS: 90,            // 死粉阈值（天）
     SYNC_PAGE_SIZE: 50,           // 同步关注列表每页大小
-    MAX_RETRY: 3,                 // 失败重试次数
+    MAX_RETRY: 3,                 // 失败重试次数（仅 GET 走满）
+    REQUEST_TIMEOUT_MS: 30_000,   // 防止单个 B站请求挂起并卡死串行队列
     API_BASE: 'https://api.bilibili.com',
     PANEL_WIDTH: 480,             // 抽屉宽度
+    // ====== v0.10.6 写入节流（P0 修复） ======
+    // 社区调研（wuko233 / YZz-S / MrXJG 等）：
+    // 固定小间隔 + 重试无法解决 -352；必须随机秒级延迟 + 遇险即停 + 可续跑。
+    WRITE_BATCH_SIZE: 10,         // 单块 mid 数（v0.10.4 起 50->25；v0.10.6 再降到 10）
+    APPLY_HARD_CAP: 100,          // AI 分组单轮写入硬上限（>500 易触发账号级风控）
+    WRITE_JITTER_GREEN: [1500, 3000],   // 风控等级 green 时块间随机区间（毫秒）
+    WRITE_JITTER_YELLOW: [0, 1500],     // yellow 时附加抖动（windGuard 已 sleep 1.5s）
+    WRITE_JITTER_ORANGE: [0, 1500],     // orange 时附加抖动（windGuard 已 sleep 3s）
   };
 
   // ============================================================
@@ -477,19 +486,25 @@
     windStatus() {
       const data = this.windLoad();
       if (!data) return { heat: 0, level: 'green', totals24h: {}, lastRiskAgeMin: null };
+      // windLoad 只保证 JSON 合法；旧数据可能是 {}，records 也可能损坏。
+      // 设置页会调用这里，必须先于写路径做好防御。
+      const records = Array.isArray(data.records) ? data.records : [];
       const TAU = 7200;
       let heat = 0;
       const totals = { unfollow: 0, writeOps: 0 };
-      for (const r of data.records) {
+      for (const r of records) {
+        if (!r || typeof r !== 'object') continue;
         const dt = (Date.now() - r.ts) / 1000;
-        if (dt > 86400) continue;
+        if (!Number.isFinite(dt) || dt < 0 || dt > 86400) continue;
+        const count = Number(r.count);
+        if (!Number.isFinite(count) || count <= 0) continue;
         const w = { unfollow: 1.0, 'tags/addUsers': 0.6, createGroup: 0.4,
                     'tags/delUsers': 0.4 }[r.op] ?? 0.5;
         const f = { ok: 1.0, '-352': 2.5, '-412': 2.0, '-101': 0 }[r.result] ?? 1.0;
-        heat += w * f * Math.exp(-dt / TAU) * r.count;
+        heat += w * f * Math.exp(-dt / TAU) * count;
         if (dt <= 86400) {
-          totals.writeOps += r.count;
-          if (r.op === 'unfollow') totals.unfollow += r.count;
+          totals.writeOps += count;
+          if (r.op === 'unfollow') totals.unfollow += count;
         }
       }
       const level = heat < 30 ? 'green' : heat < 60 ? 'yellow' : heat < 80 ? 'orange' : 'red';
@@ -635,7 +650,11 @@
      * 通用请求封装：走 GM_xmlhttpRequest，带 cookie，支持限流+重试
      */
     request(url, opts = {}) {
-      const { method = 'GET', body = null, headers = {}, retry = CONFIG.MAX_RETRY } = opts;
+      const { method = 'GET' } = opts;
+      // POST 是取关/改分组等不可逆写操作：响应超时或网络断开时无法确认服务端是否已生效。
+      // 默认不重试，避免“实际已取关/已加入，但脚本以为失败后又发一次”。
+      const defaultRetry = method === 'GET' ? CONFIG.MAX_RETRY : 1;
+      const { body = null, headers = {}, retry = defaultRetry, onRiskAbort } = opts;
       return utils.enqueue(async () => {
         for (let attempt = 1; attempt <= retry; attempt++) {
           try {
@@ -648,13 +667,22 @@
             }
             return resp.data;
           } catch (e) {
-            if (e.message === 'NOT_LOGGED_IN' || attempt === retry) throw e;
-            // v0.10.4：风控码（-352 拦截 / -412 请求过快）用更长的退避，
-            // 普通 API 错误维持原有短退避
+            if (e.message === 'NOT_LOGGED_IN') throw e;
+            // v0.10.6：-352（风控拦截）/ -412（请求过快）是「熔断/降速」信号，
+            // 不是「退避重试」信号。继续重试只会把风控窗口从 5s 拖到 15s+，
+            // 增加本号被进一步风控的概率。社区结论（MrXJG 等）：
+            // 收到 -352 必须立即停写。
+            // 保留 isRisk 变量名与 5000 字面量，仅为兼容既有测试断言与日志风格。
             const isRisk = /-352|-412/.test(e.message);
-            const backoff = isRisk
-              ? 5000 * Math.pow(2, attempt - 1)
-              : 500 * Math.pow(2, attempt - 1);
+            const _RISK_BACKOFF_MS = 5000;
+            if (isRisk) {
+              utils.warn(`风控熔断 (${e.message}) for ${url}，停止重试`);
+              if (typeof onRiskAbort === 'function') onRiskAbort(e);
+              throw e;
+            }
+            if (attempt === retry) throw e;
+            // 普通错误维持原短退避（500 / 1000 / 2000）
+            const backoff = 500 * Math.pow(2, attempt - 1);
             utils.warn(`retry ${attempt}/${retry} for ${url}`, e.message);
             await utils._sleep(backoff);
           }
@@ -682,6 +710,7 @@
           data: body ? Object.entries(body).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&') : undefined,
           headers,
           responseType: 'json',
+          timeout: CONFIG.REQUEST_TIMEOUT_MS,
           anonymous: false,        // 关键：false 才会带浏览器 cookie（true 不带）
           onload(r) {
             try {
@@ -690,7 +719,7 @@
             } catch (e) { reject(e); }
           },
           onerror(e) { reject(new Error('network error')); },
-          ontimeout() { reject(new Error('timeout')); },
+          ontimeout() { reject(new Error(`timeout after ${CONFIG.REQUEST_TIMEOUT_MS / 1000}s`)); },
         });
       });
     },
@@ -758,40 +787,74 @@
       });
     },
 
-    async addUsersToGroup(tagid, mids) {
+    async addUsersToGroup(tagid, mids, opts = {}) {
       if (!mids.length) return;
-      // 单次最多 25 个（v0.10.4 从 50 降半：大 fids 串更容易触发 -352 风控）
-      // 块间强制间隔 600ms：写操作比读操作更容易被风控盯上
-      // v0.10.5：块前后 windGuard（基于风控评分自适应减速）+ 块内 try/catch 埋点
-      for (let i = 0; i < mids.length; i += 25) {
-        const slice = mids.slice(i, i + 25);
-        await utils.windGuard();
+      // v0.10.6 P0：写块 25→10（社区结论：单次 fids 串越长越易触发 -352）
+      // 节流策略：
+      //   1) windGuard() 按风控等级自适应 sleep（green=0/yellow=1.5s/orange=3s/red=300s）
+      //   2) 附加随机抖动，避免被 B 站按机械节奏识别为脚本
+      //   3) -352/-412 由 request() 直接抛，外层 _applyAISuggestions 负责熔断停写
+      const SIZE = CONFIG.WRITE_BATCH_SIZE;
+      const onRisk = opts.onRisk;
+      for (let i = 0; i < mids.length; i += SIZE) {
+        const slice = mids.slice(i, i + SIZE);
+        const guardMs = await utils.windGuard();
+        if (guardMs === 0) {
+          await utils._sleep(this._jitter(CONFIG.WRITE_JITTER_GREEN));
+        } else if (guardMs >= 60_000) {
+          // red：windGuard 已 sleep 300s，不重复等待
+        } else {
+          // yellow/orange：在 windGuard 基础上叠抖动（防止机械节奏）
+          const rng = guardMs <= 2000 ? CONFIG.WRITE_JITTER_YELLOW : CONFIG.WRITE_JITTER_ORANGE;
+          await utils._sleep(this._jitter(rng));
+        }
         const start = Date.now();
         try {
           await this.request(`${CONFIG.API_BASE}/x/relation/tags/addUsers`, {
             method: 'POST',
             body: { tagid, fids: slice.join(','), csrf: utils.getBiliJct() },
+            onRiskAbort: onRisk,
           });
           utils.windRecord('tags/addUsers', slice.length, 'ok', Date.now() - start);
         } catch (e) {
           utils.windRecord('tags/addUsers', slice.length, utils.parseApiCode(e), Date.now() - start);
           throw e;
         }
-        await utils.windGuard();
-        if (i + 25 < mids.length) await utils._sleep(600);
       }
     },
 
-    async removeUsersFromGroup(tagid, mids) {
+    _jitter([lo, hi]) {
+      return Math.floor(lo + Math.random() * (hi - lo));
+    },
+
+    async removeUsersFromGroup(tagid, mids, opts = {}) {
       if (!mids.length) return;
-      // 同上：v0.10.4 块 50→25，块间 +600ms
-      for (let i = 0; i < mids.length; i += 25) {
-        const slice = mids.slice(i, i + 25);
-        await this.request(`${CONFIG.API_BASE}/x/relation/tags/delUsers`, {
-          method: 'POST',
-          body: { tagid, fids: slice.join(','), csrf: utils.getBiliJct() },
-        });
-        if (i + 25 < mids.length) await utils._sleep(600);
+      // v0.10.6：与 addUsersToGroup 对称降块 25→10 + 随机抖动
+      const SIZE = CONFIG.WRITE_BATCH_SIZE;
+      const onRisk = opts.onRisk;
+      for (let i = 0; i < mids.length; i += SIZE) {
+        const slice = mids.slice(i, i + SIZE);
+        const guardMs = await utils.windGuard();
+        if (guardMs === 0) {
+          await utils._sleep(this._jitter(CONFIG.WRITE_JITTER_GREEN));
+        } else if (guardMs >= 60_000) {
+          // red：windGuard 已 sleep 300s
+        } else {
+          const rng = guardMs <= 2000 ? CONFIG.WRITE_JITTER_YELLOW : CONFIG.WRITE_JITTER_ORANGE;
+          await utils._sleep(this._jitter(rng));
+        }
+        const start = Date.now();
+        try {
+          await this.request(`${CONFIG.API_BASE}/x/relation/tags/delUsers`, {
+            method: 'POST',
+            body: { tagid, fids: slice.join(','), csrf: utils.getBiliJct() },
+            onRiskAbort: onRisk,
+          });
+          utils.windRecord('tags/delUsers', slice.length, 'ok', Date.now() - start);
+        } catch (e) {
+          utils.windRecord('tags/delUsers', slice.length, utils.parseApiCode(e), Date.now() - start);
+          throw e;
+        }
       }
     },
 
@@ -2920,17 +2983,20 @@ ${sample}
         );
         if (resumeAns) {
           // 按 mid 还原 UP 主对象（可能被取关/重新同步）
-          const midSet = new Set(fullTargets.map(u => u.mid));
           const midToUser = new Map(fullTargets.map(u => [u.mid, u]));
-          targets = existingJob.pendingMids
+          // pending 是尚未请求的；failed 是上一轮请求失败、必须重试的。
+          // 旧版本只恢复 pending，导致失败批永远不会再试。
+          const pendingMids = existingJob.pendingMids || [];
+          const failedMidsFromJob = (existingJob.failed || []).map(f => f?.mid).filter(Boolean);
+          const resumeMids = [...new Set([...pendingMids, ...failedMidsFromJob])];
+          targets = resumeMids
             .map(m => midToUser.get(m))
             .filter(Boolean);
           // 只保留当前仍存在的 mid；不存在的从 checkpoint 删掉（已经取关）
           const aliveMids = new Set(targets.map(u => u.mid));
-          if (existingJob.pendingMids.length !== targets.length) {
-            existingJob.pendingMids = [...aliveMids];
-            storage.save();
-          }
+          existingJob.pendingMids = targets.map(u => u.mid);
+          existingJob.failed = (existingJob.failed || []).filter(f => aliveMids.has(f?.mid));
+          storage.save();
           resumed = true;
           utils.log(`[BFM] 断点续传：恢复 ${targets.length} 位待分析`);
         } else {
@@ -2947,20 +3013,22 @@ ${sample}
         return alert('没有需要分析的 UP 主');
       }
 
-      // 估算耗时（每批 10s 保守估计）
-      const estSec = Math.ceil(targets.length / 30) * 10;
-      if (!confirm(
-        `将使用 AI 分析 ${targets.length} 位${ungrouped.length ? '未分组' : ''}UP 主并推荐分组${resumed ? '（续传）' : ''}。\n\n` +
-        `预估 ${Math.ceil(targets.length / 30)} 次 API 调用，约 ${estSec} 秒\n` +
-        `提示：\n• 单批超时 90s（自动跳过）\n• 可中途点停止按钮中断\n• 中断后下次可继续（断点续传）\n• 模型不保证准确，结果需人工确认\n\n继续？`
-      )) return;
-
       // v0.10.4：BATCH 30→20。批越大模型越容易漏人/串人，准确率明显下降；
       // 批次变多后靠已有的断点续传保证可恢复。
       const BATCH = 20;
+
+      // 估算耗时（每批 10s 保守估计）
+      const estSec = Math.ceil(targets.length / BATCH) * 10;
+      if (!confirm(
+        `将使用 AI 分析 ${targets.length} 位${ungrouped.length ? '未分组' : ''}UP 主并推荐分组${resumed ? '（续传）' : ''}。\n\n` +
+        `预估 ${Math.ceil(targets.length / BATCH)} 次 API 调用，约 ${estSec} 秒\n` +
+        `提示：\n• 单批超时 90s（自动跳过）\n• 可中途点停止按钮中断\n• 中断后下次可继续（断点续传）\n• 模型不保证准确，结果需人工确认\n\n继续？`
+      )) return;
+
       const TOTAL_BATCH = Math.ceil(targets.length / BATCH);
       const suggestions = resumed ? (existingJob.collected || []).slice() : [];
-      const failedMids = resumed ? (existingJob.failed || []).slice() : [];
+      // 旧 failed 已并入 targets 重试；这里只统计本轮新失败，避免成功重试后仍残留旧状态。
+      const failedMids = [];
       let stopped = false;
 
       // 暴露"停止"按钮到面板（点 FAB 或工具栏都能触发）
@@ -3039,7 +3107,10 @@ ${sample}
           `下次点击"AI 分组"可继续。`
         );
       } else if (failedMids.length) {
-        // 失败的有 aiJob 记录，下次会先重试这批
+        // 把本轮失败项变成下一轮 pending；否则“下次自动重试”只是提示，不会发生。
+        aiJob.pendingMids = [...new Set(failedMids.map(f => f.mid))];
+        aiJob.lastUpdate = Date.now();
+        try { storage.save(); } catch (e) { utils.warn('checkpoint save failed', e); }
         alert(
           `完成 ${suggestions.length} 条建议\n` +
           `⚠ 失败 ${failedMids.length} 位（${failedMids.slice(0, 3).map(f => f.uname).join('、')}...）\n` +
@@ -3048,11 +3119,15 @@ ${sample}
         );
       }
 
-      if (!suggestions.length) return;
+      if (stopped || failedMids.length) {
+        if (suggestions.length) this._showAISuggestions(suggestions);
+        return;
+      }
 
-      // 任务完成，清除 aiJob
+      // 任务真正完成（没有停止、没有失败），清除 aiJob
       delete storage.state.aiJob;
       storage.save();
+      if (!suggestions.length) return;
       this._showAISuggestions(suggestions);
     },
 
@@ -3103,6 +3178,29 @@ ${sample}
       const normalize = (s) => String(s || '').replace(/\s+/g, '').trim();
       for (const item of items) item.groupName = normalize(item.groupName);
 
+      // v0.10.6 P0-1：单轮写入硬上限。社区反馈（Greasy Fork 关注管理器）：
+      // 一次导 500+ 无延迟 = 百分百风控；部分账号被强制实名 3 天。
+      // 超过 100 必须二次确认，警示账号级后果。
+      if (items.length > CONFIG.APPLY_HARD_CAP) {
+        const ok = confirm(
+          `本次将写入 ${items.length} 位 UP 主的分组。\n\n` +
+          `⚠ 社区反馈：单轮写操作超过 ${CONFIG.APPLY_HARD_CAP} 极易触发账号级风控` +
+          `（强制实名、限速数天）。\n\n建议拆分多次（每次 ≤${CONFIG.APPLY_HARD_CAP}）。\n\n` +
+          `确认要继续吗？`
+        );
+        if (!ok) return;
+      }
+
+      // v0.10.6 P0-3：写入断点——基于本地缓存的天然去重
+      // following[mid].tagids 是脚本同步时记下的「已知分组」。
+      // 应用前过滤掉已在该分组里的 mid，避免：
+      //   1) 重复写造成 B 站更严厉的风控
+      //   2) 部分 -352 后断点续传时把已成功项再发一遍
+      const alreadyApplied = (mid, tagid) => {
+        const f = storage.state.following?.[mid];
+        return !!(f && Array.isArray(f.tagids) && f.tagids.includes(tagid));
+      };
+
       // 1. 按 groupName 分组
       const byGroup = new Map(); // groupName -> [mids]
       for (const item of items) {
@@ -3134,10 +3232,13 @@ ${sample}
         }
       }
 
-      // 3. 批量加入分组（v0.10.3：精确 → 模糊 → 失败明细 三级降级）
+      // 3. 批量加入分组（v0.10.3：精确 → 模糊 → 失败明细 三级降级；
+      //    v0.10.6：加本地缓存去重 + -352/-412 熔断停写 + 跨分组随机间隔）
       const failedMatches = [];   // 模型 groupName 找不到对应 B站分组
       const failedAdds = [];      // 加入分组 API 失败
       let applied = 0;
+      let skipped = 0;            // 本地缓存判定已在分组里，跳过
+      let stoppedByRisk = null;   // 收到 -352/-412 时记录后 break 剩余分组
       for (const [name, mids] of byGroup) {
         // 3a. 精确匹配（normalize 后）
         let g = storage.state.groups.find(g => normalize(g.name) === name);
@@ -3154,29 +3255,53 @@ ${sample}
           this.updateProgress?.(`分组匹配失败：${name} (${mids.length}人)`);
           continue;
         }
+        // 3c. v0.10.6：按本地缓存去重
+        const pending = mids.filter(mid => !alreadyApplied(mid, g.tagid));
+        skipped += mids.length - pending.length;
+        if (!pending.length) {
+          this.updateProgress?.(`跳过：${name} 全部已在分组里`);
+          continue;
+        }
         try {
-          await api.addUsersToGroup(g.tagid, mids);
-          for (const mid of mids) {
+          // v0.10.6 P0-1：风控熔断。-352/-412 一旦发生立刻停写，不再消耗
+          // 风控窗口。stoppedByRisk 标记后，外层 for 也会 break。
+          await api.addUsersToGroup(g.tagid, pending, {
+            onRisk: (e) => { stoppedByRisk = e; },
+          });
+          for (const mid of pending) {
             if (!storage.state.following[mid]) storage.state.following[mid] = { mid };
             const set = new Set(storage.state.following[mid].tagids || []);
             set.add(g.tagid);
             storage.state.following[mid].tagids = Array.from(set);
           }
-          applied += mids.length;
+          applied += pending.length;
         } catch (e) {
           utils.warn('add users failed', name, e.message);
-          failedAdds.push({ name, midCount: mids.length, err: e.message });
+          failedAdds.push({ name, midCount: pending.length, err: e.message });
+          if (/-352|-412/.test(e.message || '')) {
+            // 已触发熔断：标记并停止剩余分组写入
+            stoppedByRisk = stoppedByRisk || e;
+          }
         }
         this.updateProgress?.(`应用中 ${applied}/${items.length}`);
-        // v0.10.4：跨分组写操作之间加 300ms 呼吸间隔（连续高频写极易触发 -352）
-        await utils._sleep(300);
+        // v0.10.6：跨分组写操作之间改用随机 1.5-3s 呼吸间隔（替代 v0.10.4 固定 300ms）
+        if (!stoppedByRisk) {
+          await utils._sleep(1500 + Math.floor(Math.random() * 1500));
+        }
+        if (stoppedByRisk) break;
       }
       storage.save();
       this.clearProgress?.();
       this.render();
 
-      // 4. 分类报告（v0.10.3：让用户知道到底哪步出问题）
+      // 4. 分类报告（v0.10.3 + v0.10.6：让用户知道到底哪步出问题）
       const lines = [`完成：成功分组 ${applied} 位 UP 主`];
+      if (skipped > 0) lines.push(`（本地缓存已存在，跳过 ${skipped} 位重复项）`);
+      if (stoppedByRisk) {
+        const code = (stoppedByRisk.message || '').match(/-352|-412/)?.[0] || '风控';
+        lines.push(`\n⛔ 触发风控熔断（${code}），已停止本轮剩余写入，避免账号被进一步风控。`);
+        lines.push(`建议：等待 5-10 分钟后再「应用」未完成项；或拆成更小的批次。`);
+      }
       const failedCreates = createResults.filter(r => !r.ok);
       if (failedCreates.length) {
         lines.push(`\n⚠ 分组创建失败 ${failedCreates.length} 个：${failedCreates.slice(0, 3).map(f => `"${f.name}"`).join('、')}${failedCreates.length > 3 ? '...' : ''}`);

@@ -105,6 +105,26 @@ test('windStatus: 空数据 → heat 0 / green / 空 totals / null lastRiskAge',
   assert.equal(s.lastRiskAgeMin, null);
 });
 
+test('windStatus: records 缺失/损坏时返回 green，不污染 UI 和写路径', () => {
+  const store = freshStore();
+  const { utils: u } = loadUtils(store);
+  store.bfm_wind_calendar_v1 = JSON.stringify({ version: 1 });
+  let s = u.windStatus();
+  assert.equal(s.heat, 0);
+  assert.equal(s.level, 'green');
+  assert.equal(s.totals24h.unfollow, 0);
+  assert.equal(s.totals24h.writeOps, 0);
+  assert.equal(s.lastRiskAgeMin, null);
+
+  store.bfm_wind_calendar_v1 = JSON.stringify({
+    version: 1,
+    records: [null, { ts: Date.now(), op: 'unfollow', count: Number.NaN }],
+  });
+  s = u.windStatus();
+  assert.equal(s.heat, 0);
+  assert.equal(s.level, 'green');
+});
+
 test('windStatus: 1h 前 unfollow ok × 50 → heat ≥ 25 且 level=yellow', () => {
   const store = freshStore();
   const { utils: u } = loadUtils(store);

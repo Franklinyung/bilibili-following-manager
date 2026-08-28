@@ -116,6 +116,18 @@ test('.user.js 用户停止时保留 aiJob 以便续传', () => {
     '停止时必须告诉用户可继续');
 });
 
+test('.user.js 断点续传必须合并 pendingMids 和 failed（失败批能重试）', () => {
+  // 抓取 resume 分支关键实现，防止回退到只读 pendingMids。
+  assert.match(USER_JS, /failedMidsFromJob/,
+    '恢复时必须读取 checkpoint 里的 failed mid');
+  assert.match(USER_JS, /\[\.\.\.pendingMids,\s*\.\.\.failedMidsFromJob\]/,
+    '待分析队列必须包含失败批');
+  assert.match(
+    USER_JS,
+    /aiJob\.pendingMids\s*=\s*\[\.\.\.new Set\(failedMids\.map\(f\s*=>\s*f\.mid\)\)\]/,
+    '本轮完成后必须把失败项写回下一轮 pending');
+});
+
 function validJob() {
   return {
     type: 'grouping',

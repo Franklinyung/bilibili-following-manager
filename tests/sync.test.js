@@ -28,9 +28,9 @@ test('.user.js 暴露 getUndetected 方法', () => {
   assert.match(content, /getUndetected\s*\(\s*\)\s*\{/, '应暴露 getUndetected 方法供 UI 调用');
 });
 
-test('.user.js @version 已升级到 v0.10.5', () => {
+test('.user.js @version 已升级到 v0.10.6', () => {
   const content = readFileSync(USER_JS, 'utf8');
-  assert.match(content, /@version\s+0\.10\.5/, '部署版本必须是 v0.10.5');
+  assert.match(content, /@version\s+0\.10\.6/, '部署版本必须是 v0.10.6');
 });
 
 test('.user.js 不应包含 @require CDN（v0.4.0 后已切内联 MD5）', () => {
@@ -116,6 +116,24 @@ test('.user.js runAIGrouping 必须有 stopped / failedMids', () => {
   assert.match(content, /failedMids/, 'runAIGrouping 必须用 failedMids 收集失败');
 });
 
+test('.user.js B站 API 请求必须有 timeout（防串行队列挂起）', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  const block = content.match(/_doRequest\([^)]*\)\s*\{[\s\S]*?ontimeout/);
+  assert.ok(block, '_doRequest 必须存在');
+  assert.match(block[0], /timeout:\s*CONFIG\.REQUEST_TIMEOUT_MS/,
+    'GM_xmlhttpRequest 必须设置 B站 API timeout');
+  assert.match(content, /REQUEST_TIMEOUT_MS:\s*\d{2,3}_?000/,
+    'timeout 必须是明确的毫秒数');
+});
+
+test('.user.js 不可逆 POST 默认不能自动重试', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  const block = content.match(/request\(url,\s*opts\s*=\s*\{\}\)\s*\{[\s\S]*?return utils\.enqueue/);
+  assert.ok(block, 'request 必须存在');
+  assert.match(block[0], /defaultRetry\s*=\s*method\s*===\s*['"]GET['"]\s*\?\s*CONFIG\.MAX_RETRY\s*:\s*1/,
+    'GET 可重试；POST 默认只发一次');
+});
+
 // ===== v0.10.5: 风控日历埋点护栏 =====
 
 test('.user.js 4 个写操作点都埋了 windRecord / windGuard', () => {
@@ -132,6 +150,16 @@ test('.user.js 4 个写操作点都埋了 windRecord / windGuard', () => {
   // 4) runBatchUnfollow 函数体内 windGuard（不调 windRecord，避免与 api.unfollow 双计）
   assert.match(c, /async runBatchUnfollow\([^)]*\)\s*\{[\s\S]*?await utils\.windGuard\(\)/,
     'runBatchUnfollow 函数体内必须 windGuard');
+});
+
+test('.user.js removeUsersFromGroup 也要 windGuard / windRecord', () => {
+  const content = readFileSync(USER_JS, 'utf8');
+  // v0.10.6：签名扩展为 (tagid, mids, opts = {})
+  const block = content.match(/removeUsersFromGroup\(tagid,\s*mids(?:,\s*opts[^)]*)?\)\s*\{[\s\S]*?\n    \},/);
+  assert.ok(block, 'removeUsersFromGroup 必须存在');
+  assert.match(block[0], /await utils\.windGuard\(\)/, '移出分组前必须自适应减速');
+  assert.match(block[0], /windRecord\(['"]tags\/delUsers['"]/,
+    '移出分组必须记录风控日历');
 });
 // ===== v0.10.1: a11y + JSDOM =====
 
