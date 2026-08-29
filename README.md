@@ -1,6 +1,8 @@
 # B 站关注管理助手 (bilibili-following-manager)
 
 > 一个油猴脚本，让你的关注列表井井有条——批量分组、动态页分组筛选、死粉识别、AI 智能分类、断点续传。
+>
+> 配套脚本：[`bilibili-home-cleaner.user.js`](./bilibili-home-cleaner.user.js)（独立项目）— 隐藏首页轮播广告、"短视频" Tab 等噪音。
 
 **GitHub**：https://github.com/Franklinyung/bilibili-following-manager
 **当前版本**：v0.10.6 · **测试**：171 / 171 通过 · 9 / 9 smoke 通过
