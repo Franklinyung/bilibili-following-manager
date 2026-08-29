@@ -2,7 +2,7 @@
 
 > 一个油猴脚本，让你的关注列表井井有条——批量分组、动态页分组筛选、死粉识别、AI 智能分类、断点续传。
 >
-> 配套脚本：[`bilibili-home-cleaner.user.js`](./bilibili-home-cleaner.user.js)（独立项目）— 隐藏首页轮播广告、"短视频" Tab 等噪音。
+> 配套独立项目：[**bilibili-home-cleaner**](https://github.com/Franklinyung/bilibili-home-cleaner) — 隐藏首页轮播广告、"短视频"Tab、给视频卡片加分类标签、按分类浏览。与本脚本互不干扰，建议同时启用。
 
 **GitHub**：https://github.com/Franklinyung/bilibili-following-manager
 **当前版本**：v0.10.6 · **测试**：171 / 171 通过 · 9 / 9 smoke 通过
