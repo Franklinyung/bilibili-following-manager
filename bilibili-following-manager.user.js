@@ -17,6 +17,7 @@
 // @grant        GM_getValue
 // @grant        GM_addStyle
 // @grant        GM_registerMenuCommand
+// @grant        GM_download
 // @connect      api.bilibili.com
 // @connect      i0.hdslb.com
 // @connect      api.deepseek.com
@@ -279,7 +280,21 @@
     },
 
     // 下载 JSON 文件
+    //
+    // 修复"点导出跳到无法访问页且不产生文件"：
+    // 原实现走 blob: URL + <a download>，并在 100ms 后 revokeObjectURL。
+    // 实测在油猴沙箱下 download 属性不被采纳，这次点击被当成**普通链接导航**；
+    // 而 blob 此时已被撤销，于是页面停在"无法访问"，且没有任何文件落地。
+    // 改为优先走 GM_download（油猴原生下载通道，不经过页面 anchor，已验证可正常落盘）；
+    // 非油猴环境保持原有行为不变（<a download> 在普通页面里是正常工作的）。
     downloadJSON(filename, data) {
+      if (typeof GM_download === 'function') {
+        // 用 data: URL：无生命周期问题，也不会被 revoke
+        const dataUrl = 'data:application/json;charset=utf-8,'
+          + encodeURIComponent(JSON.stringify(data, null, 2));
+        GM_download({ url: dataUrl, name: filename, saveAs: false });
+        return;
+      }
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
